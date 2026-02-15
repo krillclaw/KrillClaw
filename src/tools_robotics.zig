@@ -1,3 +1,4 @@
+// PREVIEW: These tools demonstrate the profile API. Full implementation coming in v0.2.
 //! Robotics profile tools — structured robot commands with bounds checking, e-stop, telemetry.
 //! Policy: no bash, no file writes, command rate limiting, bounds enforcement, watchdog.
 const std = @import("std");

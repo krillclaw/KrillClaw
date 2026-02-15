@@ -1,3 +1,4 @@
+// PREVIEW: These tools demonstrate the profile API. Full implementation coming in v0.2.
 //! IoT profile tools — communicates with Python bridge via structured JSON over stdin/stdout.
 //! Policy: no bash, no arbitrary file writes, rate-limited bridge calls.
 const std = @import("std");

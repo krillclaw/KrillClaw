@@ -13,7 +13,7 @@ YoctoClaw is a fully autonomous AI coding agent written in Zig. Zero dependencie
 
 ## Why?
 
-Every coding agent is a 500MB Electron app or a 50MB Node.js bundle. The actual logic — "call LLM, execute tools, loop" — is 3,317 lines of Zig and a 180KB binary. YoctoClaw proves it.
+Every coding agent is a 500MB Electron app or a 50MB Node.js bundle. The actual logic — "call LLM, execute tools, loop" — is ~3,500 LOC (including tests) of Zig and a 180KB binary. YoctoClaw proves it.
 
 ## Size
 
@@ -21,7 +21,7 @@ Every coding agent is a 500MB Electron app or a 50MB Node.js bundle. The actual 
 |---|---------|-------------|--------|-------|------------|
 | **Binary** | **~150-180 KB** | ~50 MB | ~500 MB | ~50 MB | ~8 MB |
 | **RAM** | **~2 MB** | ~200 MB | ~1 GB | ~150 MB | ~10 MB |
-| **Source** | **~3,800 LOC** | ~100K LOC | ? | ~30K LOC | ~5K LOC |
+| **Source** | **~3,500 LOC (including tests)** | ~100K LOC | ? | ~30K LOC | ~5K LOC |
 | **Deps** | **0** | ~500 npm | ~1000+ | ~100 pip | ~50 Go |
 | **Boot** | **<10 ms** | ~2s | ~5s | ~3s | <1s |
 | **Languages** | **Zig** | TypeScript | TypeScript | Python | Go |
@@ -65,18 +65,18 @@ YoctoClaw supports compile-time profiles that select different tool sets for dif
 # Coding agent (default) — bash, read/write/edit files, search, apply_patch
 zig build -Dprofile=coding -Doptimize=ReleaseSmall
 
-# IoT agent — MQTT pub/sub, HTTP requests, key-value store, device info
+# IoT agent [Preview] — MQTT pub/sub, HTTP requests, key-value store, device info
 zig build -Dprofile=iot -Doptimize=ReleaseSmall
 
-# Robotics agent — robot commands with bounds checking, e-stop, telemetry
+# Robotics agent [Preview] — robot commands with bounds checking, e-stop, telemetry
 zig build -Dprofile=robotics -Doptimize=ReleaseSmall
 ```
 
 | Profile | Tools | Binary Size | Policy |
 |---------|-------|-------------|--------|
 | **coding** | bash, read/write/edit_file, search, list_files, apply_patch | ~180 KB | bash behind approval gate, writes restricted to cwd |
-| **iot** | publish_mqtt, subscribe_mqtt, http_request, kv_get/set, device_info | ~150 KB | no bash, no file writes, 30 req/min rate limit |
-| **robotics** | robot_cmd (pose/velocity/gripper), estop, telemetry_snapshot | ~160 KB | no bash, no file writes, bounds checking, 10 cmd/s rate limit, e-stop |
+| **iot** [Preview] | publish_mqtt, subscribe_mqtt, http_request, kv_get/set, device_info | ~150 KB | no bash, no file writes, 30 req/min rate limit |
+| **robotics** [Preview] | robot_cmd (pose/velocity/gripper), estop, telemetry_snapshot | ~160 KB | no bash, no file writes, bounds checking, 10 cmd/s rate limit, e-stop |
 
 ## Features
 
@@ -185,7 +185,7 @@ test/
 └── integration.sh  # CLI smoke + integration tests                    (92 lines)
 ```
 
-16 Zig files. ~3,800 lines. 1 Python bridge. Zero Zig dependencies.
+16 Zig files. ~3,500 LOC (including tests). 1 Python bridge. Zero Zig dependencies.
 
 ## Architecture Decisions
 
@@ -277,10 +277,11 @@ Pre-defined sizes: `Arena4K`, `Arena16K`, `Arena32K`, `Arena128K`, `Arena256K`.
 
 ## Security
 
-- **No shell injection in search/list_files:** These tools use pure Zig `std.fs` APIs for directory walking and file scanning. No shell commands, no injection vectors.
-- **Binary file detection:** Search skips files with null bytes in the first 512 bytes.
-- **Bounded output:** Bash output capped at 256KB, search capped at 100 matches, list capped at 200 files, recursion depth capped at 10.
-- **RPC escaping:** Transport RPC builders escape string fields to prevent JSON injection.
+YoctoClaw executes tools on the host system with the permissions of the running user. Like all coding agents (Claude Code, Aider, Cursor), it can execute arbitrary commands when instructed by the LLM. **Do not run YoctoClaw with elevated privileges.** Use the policy system to restrict tool access.
+
+BLE and Serial transports do not currently include encryption or authentication. Use only on trusted networks.
+
+To report security issues, email [security contact].
 
 ## Build
 

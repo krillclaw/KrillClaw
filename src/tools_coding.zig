@@ -344,7 +344,17 @@ fn executeApplyPatch(allocator: std.mem.Allocator, input: []const u8) ToolResult
             return .{ .output = "Cannot write patch", .is_error = true };
         };
     }
-    const cmd = std.fmt.allocPrint(allocator, "patch -p0 '{s}' < '{s}'", .{ path, tmp_patch }) catch {
+    // Escape single quotes in path to prevent shell injection
+    var escaped_path = std.ArrayList(u8).init(allocator);
+    for (path) |c| {
+        if (c == ''') {
+            escaped_path.appendSlice("'\\''" ) catch return .{ .output = "escape error", .is_error = true };
+        } else {
+            escaped_path.append(c) catch return .{ .output = "escape error", .is_error = true };
+        }
+    }
+    const safe_path = escaped_path.toOwnedSlice() catch return .{ .output = "escape error", .is_error = true };
+    const cmd = std.fmt.allocPrint(allocator, "patch -p0 '{s}' < '{s}'", .{ safe_path, tmp_patch }) catch {
         return .{ .output = "Failed to build patch command", .is_error = true };
     };
     const result = std.process.Child.run(.{
