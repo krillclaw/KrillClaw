@@ -19,9 +19,9 @@ Every coding agent is a 500MB Electron app or a 50MB Node.js bundle. The actual 
 
 | | YoctoClaw | Claude Code | Cursor | Aider | YoctoClaw Go |
 |---|---------|-------------|--------|-------|------------|
-| **Binary** | **~180 KB** | ~50 MB | ~500 MB | ~50 MB | ~8 MB |
+| **Binary** | **~150-180 KB** | ~50 MB | ~500 MB | ~50 MB | ~8 MB |
 | **RAM** | **~2 MB** | ~200 MB | ~1 GB | ~150 MB | ~10 MB |
-| **Source** | **~3,300 LOC** | ~100K LOC | ? | ~30K LOC | ~5K LOC |
+| **Source** | **~3,800 LOC** | ~100K LOC | ? | ~30K LOC | ~5K LOC |
 | **Deps** | **0** | ~500 npm | ~1000+ | ~100 pip | ~50 Go |
 | **Boot** | **<10 ms** | ~2s | ~5s | ~3s | <1s |
 | **Languages** | **Zig** | TypeScript | TypeScript | Python | Go |
@@ -55,6 +55,28 @@ export OPENAI_API_KEY=sk-...
 # Use local Ollama
 ./zig-out/bin/yoctoclaw --provider ollama -m llama3 "explain this code"
 ```
+
+
+## Profiles
+
+YoctoClaw supports compile-time profiles that select different tool sets for different use cases. Only the selected profile's code is compiled into the binary — zero runtime overhead.
+
+```bash
+# Coding agent (default) — bash, read/write/edit files, search, apply_patch
+zig build -Dprofile=coding -Doptimize=ReleaseSmall
+
+# IoT agent — MQTT pub/sub, HTTP requests, key-value store, device info
+zig build -Dprofile=iot -Doptimize=ReleaseSmall
+
+# Robotics agent — robot commands with bounds checking, e-stop, telemetry
+zig build -Dprofile=robotics -Doptimize=ReleaseSmall
+```
+
+| Profile | Tools | Binary Size | Policy |
+|---------|-------|-------------|--------|
+| **coding** | bash, read/write/edit_file, search, list_files, apply_patch | ~180 KB | bash behind approval gate, writes restricted to cwd |
+| **iot** | publish_mqtt, subscribe_mqtt, http_request, kv_get/set, device_info | ~150 KB | no bash, no file writes, 30 req/min rate limit |
+| **robotics** | robot_cmd (pose/velocity/gripper), estop, telemetry_snapshot | ~160 KB | no bash, no file writes, bounds checking, 10 cmd/s rate limit, e-stop |
 
 ## Features
 
@@ -143,7 +165,10 @@ src/
 ├── api.zig         # Multi-provider HTTP client (Claude/OpenAI/Ollama)(329 lines)
 ├── stream.zig      # SSE streaming parser with safe string ownership  (344 lines)
 ├── json.zig        # JSON build + extract — zero deps, hand-rolled    (500 lines)
-├── tools.zig       # 6 tools — injection-safe, pure-Zig file search   (534 lines)
+├── tools.zig       # Tool dispatcher — comptime profile selection         (140 lines)
+├── tools_coding.zig # Coding profile: 7 tools + path allowlist            (280 lines)
+├── tools_iot.zig    # IoT profile: 6 bridge tools + rate limiting         (95 lines)
+├── tools_robotics.zig # Robotics profile: 3 tools + bounds/e-stop         (155 lines)
 ├── context.zig     # Token estimation + priority-based truncation     (225 lines)
 ├── config.zig      # Config: file → env → CLI, with precedence       (184 lines)
 ├── transport.zig   # Abstract vtable transport + RPC protocol         (129 lines)
@@ -160,7 +185,7 @@ test/
 └── integration.sh  # CLI smoke + integration tests                    (92 lines)
 ```
 
-13 Zig files. 3,317 lines. 1 Python bridge. Zero Zig dependencies.
+16 Zig files. ~3,800 lines. 1 Python bridge. Zero Zig dependencies.
 
 ## Architecture Decisions
 

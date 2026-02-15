@@ -1,5 +1,6 @@
 const std = @import("std");
 const types = @import("types.zig");
+const tools_mod = @import("tools.zig");
 
 // ============================================================
 // JSON Builder — serialize Zig types to JSON
@@ -27,7 +28,7 @@ pub fn buildClaudeRequest(
     try writeEscaped(w, config.system_prompt);
     try w.writeAll("\",\"tools\":[");
 
-    for (types.tools, 0..) |tool, i| {
+    for (tools_mod.tool_definitions, 0..) |tool, i| {
         if (i > 0) try w.writeByte(',');
         try w.writeAll("{\"name\":\"");
         try writeEscaped(w, tool.name);
@@ -105,7 +106,7 @@ pub fn buildOpenAiRequest(
 
     // Tools (OpenAI format wraps in "function")
     try w.writeAll(",\"tools\":[");
-    for (types.tools, 0..) |tool, i| {
+    for (tools_mod.tool_definitions, 0..) |tool, i| {
         if (i > 0) try w.writeByte(',');
         try w.writeAll("{\"type\":\"function\",\"function\":{\"name\":\"");
         try writeEscaped(w, tool.name);

@@ -1,5 +1,6 @@
 const std = @import("std");
 const types = @import("types.zig");
+const tools_mod = @import("tools.zig");
 
 /// Context window manager.
 ///
@@ -16,7 +17,7 @@ pub const Context = struct {
     pub fn init(allocator: std.mem.Allocator, config: types.Config) Context {
         // Estimate system prompt + tool defs
         var system_chars: usize = config.system_prompt.len;
-        for (types.tools) |tool| {
+        for (tools_mod.tool_definitions) |tool| {
             system_chars += tool.name.len + tool.description.len + tool.input_schema.len + 50;
         }
 

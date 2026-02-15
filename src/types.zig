@@ -100,7 +100,7 @@ pub const StreamEventType = enum {
     message_delta,
     message_stop,
     ping,
-    error,
+    @"error",
 };
 
 pub const StreamEvent = struct {
@@ -126,50 +126,7 @@ pub const ToolDef = struct {
     input_schema: []const u8,
 };
 
-pub const tools = [_]ToolDef{
-    .{
-        .name = "bash",
-        .description = "Execute a bash command and return stdout/stderr.",
-        .input_schema =
-        \\{"type":"object","properties":{"command":{"type":"string","description":"The bash command to execute"}},"required":["command"]}
-        ,
-    },
-    .{
-        .name = "read_file",
-        .description = "Read the contents of a file at the given path.",
-        .input_schema =
-        \\{"type":"object","properties":{"path":{"type":"string","description":"Absolute path to the file to read"}},"required":["path"]}
-        ,
-    },
-    .{
-        .name = "write_file",
-        .description = "Write content to a file, creating it if it doesn't exist.",
-        .input_schema =
-        \\{"type":"object","properties":{"path":{"type":"string","description":"Absolute path to the file"},"content":{"type":"string","description":"Content to write"}},"required":["path","content"]}
-        ,
-    },
-    .{
-        .name = "edit_file",
-        .description = "Replace an exact string in a file with new content. The old_string must appear exactly once.",
-        .input_schema =
-        \\{"type":"object","properties":{"path":{"type":"string","description":"Absolute path to the file"},"old_string":{"type":"string","description":"Exact string to find and replace"},"new_string":{"type":"string","description":"Replacement string"}},"required":["path","old_string","new_string"]}
-        ,
-    },
-    .{
-        .name = "search",
-        .description = "Search for a text pattern in files. Returns matching lines with file paths and line numbers.",
-        .input_schema =
-        \\{"type":"object","properties":{"pattern":{"type":"string","description":"Text pattern to search for (substring match)"},"path":{"type":"string","description":"Directory or file to search in (default: current directory)"}},"required":["pattern"]}
-        ,
-    },
-    .{
-        .name = "list_files",
-        .description = "List files in a directory, optionally with a glob pattern.",
-        .input_schema =
-        \\{"type":"object","properties":{"path":{"type":"string","description":"Directory to list (default: current directory)"},"pattern":{"type":"string","description":"Glob pattern to filter files (e.g. *.zig)"}},"required":[]}
-        ,
-    },
-};
+// Tool definitions moved to tools.zig (profile-selected at comptime)
 
 // --- Config ---
 
@@ -181,7 +138,7 @@ pub const Config = struct {
     max_context_tokens: u32 = 100000,
     system_prompt: []const u8 =
         \\You are YoctoClaw, the world's smallest coding agent. You help users with software engineering tasks.
-        \\You have tools: bash, read_file, write_file, edit_file, search, list_files.
+        \\You have tools available based on your active profile. Use them to get work done.
         \\Be concise. Execute tools to get work done. Don't ask permission — just do it.
     ,
     max_turns: u32 = 50,

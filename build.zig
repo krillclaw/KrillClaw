@@ -1,5 +1,7 @@
 const std = @import("std");
 
+pub const Profile = enum { coding, iot, robotics };
+
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
@@ -8,11 +10,13 @@ pub fn build(b: *std.Build) void {
     const enable_ble = b.option(bool, "ble", "Enable BLE transport support") orelse false;
     const enable_serial = b.option(bool, "serial", "Enable serial/UART transport") orelse false;
     const embedded = b.option(bool, "embedded", "Build for embedded (freestanding, no OS)") orelse false;
+    const profile = b.option(Profile, "profile", "Tool profile: coding (default), iot, robotics") orelse .coding;
 
     const options = b.addOptions();
     options.addOption(bool, "enable_ble", enable_ble);
     options.addOption(bool, "enable_serial", enable_serial);
     options.addOption(bool, "embedded", embedded);
+    options.addOption(Profile, "profile", profile);
 
     const exe = b.addExecutable(.{
         .name = "yoctoclaw",
