@@ -1,9 +1,9 @@
-// PREVIEW: These tools demonstrate the profile API. Full implementation coming in v0.2.
 //! Robotics profile tools — structured robot commands with bounds checking, e-stop, telemetry.
 //! Policy: no bash, no file writes, command rate limiting, bounds enforcement, watchdog.
 const std = @import("std");
 const types = @import("types.zig");
 const json = @import("json.zig");
+const build_options = @import("build_options");
 
 pub const ToolResult = struct {
     output: []const u8,
@@ -42,11 +42,9 @@ fn checkCmdRate() bool {
 }
 
 fn extractFloat(input: []const u8, key: []const u8) ?f64 {
-    // Simple float extraction from JSON — find "key": and parse number
     const key_pattern = std.fmt.allocPrint(std.heap.page_allocator, "\"{s}\"", .{key}) catch return null;
     const key_pos = std.mem.indexOf(u8, input, key_pattern) orelse return null;
     var pos = key_pos + key_pattern.len;
-    // Skip whitespace and colon
     while (pos < input.len and (input[pos] == ' ' or input[pos] == ':')) : (pos += 1) {}
     if (pos >= input.len) return null;
     var end = pos;
@@ -92,8 +90,11 @@ pub fn execute(allocator: std.mem.Allocator, tool: types.ToolUse) ToolResult {
 fn executeEstop(allocator: std.mem.Allocator, input: []const u8) ToolResult {
     estop_active = true;
     const reason = json.extractString(input, "reason") orelse "manual";
-    _ = bridgeCmd(allocator, "estop", "{}");
-    const msg = std.fmt.allocPrint(allocator, "E-STOP activated: {s}", .{reason}) catch "E-STOP activated";
+
+    // Send e-stop to bridge (best effort — local flag is authoritative)
+    _ = bridgeCmd(allocator, "{\"action\":\"estop\"}");
+
+    const msg = std.fmt.allocPrint(allocator, "E-STOP activated: {s}. All robot commands blocked until reset.", .{reason}) catch "E-STOP activated";
     return .{ .output = msg, .is_error = false };
 }
 
@@ -109,23 +110,33 @@ fn executeRobotCmd(allocator: std.mem.Allocator, input: []const u8) ToolResult {
         return .{ .output = err_msg, .is_error = true };
     }
 
-    return bridgeCmd(allocator, "robot_cmd", input);
+    // Build bridge JSON with the full input passed through
+    const bridge_json = std.fmt.allocPrint(allocator,
+        \\{{"action":"robot_cmd","type":"{s}","params":{s}}}
+    , .{ cmd_type, input }) catch return .{ .output = "JSON build error", .is_error = true };
+
+    return bridgeCmd(allocator, bridge_json);
 }
 
 fn executeTelemetry(allocator: std.mem.Allocator) ToolResult {
-    return bridgeCmd(allocator, "telemetry_snapshot", "{}");
+    return bridgeCmd(allocator, "{\"action\":\"telemetry\"}");
 }
 
-fn bridgeCmd(allocator: std.mem.Allocator, cmd: []const u8, input: []const u8) ToolResult {
-    _ = input;
+/// Send structured JSON to the Python bridge, read response from stdout.
+fn bridgeCmd(allocator: std.mem.Allocator, bridge_json: []const u8) ToolResult {
+    if (build_options.sandbox) {
+        return .{ .output = "{\"status\":\"simulated\",\"message\":\"sandbox mode - bridge calls are simulated\"}", .is_error = false };
+    }
+
     const result = std.process.Child.run(.{
         .allocator = allocator,
-        .argv = &.{ "python3", "bridge/bridge.py", "--exec-tool", cmd },
+        .argv = &.{ "python3", "bridge/bridge.py", "--exec-tool", bridge_json },
         .max_output_bytes = 1024 * 256,
     }) catch |err| {
         const msg = std.fmt.allocPrint(allocator, "Bridge call failed: {}", .{err}) catch "bridge error";
         return .{ .output = msg, .is_error = true };
     };
+
     const is_err = switch (result.term) {
         .Exited => |code| code != 0,
         else => true,

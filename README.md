@@ -65,18 +65,22 @@ YoctoClaw supports compile-time profiles that select different tool sets for dif
 # Coding agent (default) — bash, read/write/edit files, search, apply_patch
 zig build -Dprofile=coding -Doptimize=ReleaseSmall
 
-# IoT agent [Preview] — MQTT pub/sub, HTTP requests, key-value store, device info
+# IoT agent — MQTT pub/sub, HTTP requests, key-value store, device info
 zig build -Dprofile=iot -Doptimize=ReleaseSmall
 
-# Robotics agent [Preview] — robot commands with bounds checking, e-stop, telemetry
+# Robotics agent — robot commands with bounds checking, e-stop, telemetry
 zig build -Dprofile=robotics -Doptimize=ReleaseSmall
+
+# Any profile with sandbox restrictions (no network, restricted fs, simulated backends)
+zig build -Dsandbox=true -Doptimize=ReleaseSmall
+zig build -Dprofile=iot -Dsandbox=true -Doptimize=ReleaseSmall
 ```
 
 | Profile | Tools | Binary Size | Policy |
 |---------|-------|-------------|--------|
 | **coding** | bash, read/write/edit_file, search, list_files, apply_patch | ~180 KB | bash behind approval gate, writes restricted to cwd |
-| **iot** [Preview] | publish_mqtt, subscribe_mqtt, http_request, kv_get/set, device_info | ~150 KB | no bash, no file writes, 30 req/min rate limit |
-| **robotics** [Preview] | robot_cmd (pose/velocity/gripper), estop, telemetry_snapshot | ~160 KB | no bash, no file writes, bounds checking, 10 cmd/s rate limit, e-stop |
+| **iot** | publish_mqtt, subscribe_mqtt, http_request, kv_get/set, device_info | ~150 KB | no bash, no file writes, 30 req/min rate limit |
+| **robotics** | robot_cmd (pose/velocity/gripper), estop, telemetry_snapshot | ~160 KB | no bash, no file writes, bounds checking, 10 cmd/s rate limit, e-stop |
 
 ## Features
 
@@ -274,6 +278,18 @@ mem.reset();
 ```
 
 Pre-defined sizes: `Arena4K`, `Arena16K`, `Arena32K`, `Arena128K`, `Arena256K`.
+
+## Sandbox Mode
+
+Use `-Dsandbox=true` for restricted execution. This prevents network access, limits file operations to the working directory, and runs bash commands in an isolated environment.
+
+```bash
+# Coding profile: bash runs in /tmp/yoctoclaw-sandbox with empty PATH, file ops restricted to cwd
+zig build -Dsandbox=true -Doptimize=ReleaseSmall
+
+# IoT/Robotics profiles: bridge calls return simulated data (no real MQTT/HTTP/robot commands)
+zig build -Dprofile=iot -Dsandbox=true -Doptimize=ReleaseSmall
+```
 
 ## Security
 

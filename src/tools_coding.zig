@@ -1,6 +1,7 @@
 const std = @import("std");
 const types = @import("types.zig");
 const json = @import("json.zig");
+const build_options = @import("build_options");
 
 pub const ToolResult = struct {
     output: []const u8,
@@ -59,17 +60,26 @@ pub const tool_definitions = [_]types.ToolDef{
     },
 };
 
-/// Path allowlist: restrict file operations to cwd
+/// Path allowlist: restrict file operations to cwd (stricter in sandbox mode)
 fn isPathAllowed(path: []const u8) bool {
-    // Block absolute paths outside cwd (allow /tmp for tests)
+    // Reject path traversal
+    if (std.mem.indexOf(u8, path, "..") != null) return false;
+
+    if (build_options.sandbox) {
+        // Sandbox: only relative paths under cwd, no absolute paths except /tmp/yoctoclaw-sandbox
+        if (path.len > 0 and path[0] == '/') {
+            if (std.mem.startsWith(u8, path, "/tmp/yoctoclaw-sandbox")) return true;
+            return false;
+        }
+        return true;
+    }
+
+    // Non-sandbox: allow absolute paths under cwd or /tmp
     if (path.len > 0 and path[0] == '/') {
         if (std.mem.startsWith(u8, path, "/tmp")) return true;
-        // Check if it's under cwd
         const cwd_buf = std.fs.cwd().realpathAlloc(std.heap.page_allocator, ".") catch return false;
         return std.mem.startsWith(u8, path, cwd_buf);
     }
-    // Reject path traversal
-    if (std.mem.indexOf(u8, path, "..") != null) return false;
     return true;
 }
 
@@ -89,9 +99,21 @@ fn executeBash(allocator: std.mem.Allocator, input: []const u8) ToolResult {
         return .{ .output = "Missing 'command' parameter", .is_error = true };
     };
     const unescaped_cmd = json.unescape(allocator, command) catch command;
+
+    // In sandbox mode, run inside a restricted environment
+    const shell_cmd = if (build_options.sandbox) blk: {
+        // Create sandbox directory
+        std.fs.cwd().makePath("/tmp/yoctoclaw-sandbox") catch {};
+        // Wrap command: restrict to sandbox dir, empty PATH (no network tools)
+        break :blk std.fmt.allocPrint(allocator,
+            "cd /tmp/yoctoclaw-sandbox && PATH= /bin/sh -c {s}",
+            .{shellQuote(allocator, unescaped_cmd)},
+        ) catch unescaped_cmd;
+    } else unescaped_cmd;
+
     const result = std.process.Child.run(.{
         .allocator = allocator,
-        .argv = &.{ "/bin/sh", "-c", unescaped_cmd },
+        .argv = &.{ "/bin/sh", "-c", shell_cmd },
         .max_output_bytes = 1024 * 256,
     }) catch |err| {
         const msg = std.fmt.allocPrint(allocator, "Failed to execute: {}", .{err}) catch "exec error";
@@ -110,6 +132,21 @@ fn executeBash(allocator: std.mem.Allocator, input: []const u8) ToolResult {
         return .{ .output = result.stdout, .is_error = is_err };
     }
     return .{ .output = "(no output)", .is_error = is_err };
+}
+
+/// Shell-quote a string for safe inclusion in sh -c
+fn shellQuote(allocator: std.mem.Allocator, s: []const u8) []const u8 {
+    var out = std.ArrayList(u8).init(allocator);
+    out.append('\'') catch return s;
+    for (s) |c| {
+        if (c == '\'') {
+            out.appendSlice("'\\''") catch return s;
+        } else {
+            out.append(c) catch return s;
+        }
+    }
+    out.append('\'') catch return s;
+    return out.toOwnedSlice() catch s;
 }
 
 fn executeReadFile(allocator: std.mem.Allocator, input: []const u8) ToolResult {
@@ -333,7 +370,6 @@ fn executeApplyPatch(allocator: std.mem.Allocator, input: []const u8) ToolResult
         return .{ .output = "Missing 'patch' parameter", .is_error = true };
     };
     const unescaped_patch = json.unescape(allocator, patch) catch patch;
-    // Write patch to temp file and apply with system patch command
     const tmp_patch = "/tmp/yoctoclaw_patch.tmp";
     {
         const f = std.fs.cwd().createFile(tmp_patch, .{}) catch {
@@ -344,11 +380,10 @@ fn executeApplyPatch(allocator: std.mem.Allocator, input: []const u8) ToolResult
             return .{ .output = "Cannot write patch", .is_error = true };
         };
     }
-    // Escape single quotes in path to prevent shell injection
     var escaped_path = std.ArrayList(u8).init(allocator);
     for (path) |c| {
-        if (c == ''') {
-            escaped_path.appendSlice("'\\''" ) catch return .{ .output = "escape error", .is_error = true };
+        if (c == '\'') {
+            escaped_path.appendSlice("'\\''") catch return .{ .output = "escape error", .is_error = true };
         } else {
             escaped_path.append(c) catch return .{ .output = "escape error", .is_error = true };
         }

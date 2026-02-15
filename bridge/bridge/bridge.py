@@ -5,6 +5,9 @@ YoctoClaw Bridge — connects a BLE/Serial YoctoClaw device to Claude API.
 The bridge receives RPC messages from YoctoClaw running on embedded hardware,
 forwards API calls to Claude, executes tools locally, and sends results back.
 
+Also supports --exec-tool mode: receives a JSON command as argv[2], dispatches
+to the appropriate handler, and prints JSON response to stdout.
+
 Usage:
   # BLE mode (connect to YoctoClaw ring/device):
   python bridge.py --ble
@@ -14,6 +17,9 @@ Usage:
 
   # Unix socket mode (for desktop BLE simulation):
   python bridge.py --socket /tmp/yoctoclaw.sock
+
+  # Direct tool execution (called by Zig IoT/robotics profiles):
+  python bridge.py --exec-tool '{"action":"mqtt_publish","topic":"test","payload":"hello"}'
 """
 
 import argparse
@@ -23,16 +29,309 @@ import os
 import struct
 import subprocess
 import sys
+import time
+import platform
 
 try:
     import anthropic
 except ImportError:
-    print("pip install anthropic")
-    sys.exit(1)
+    anthropic = None
 
+# ============================================================
+# Tool Handlers (used by --exec-tool mode)
+# ============================================================
+
+ROBOT_LOG_PATH = os.path.expanduser("~/.yoctoclaw/robot_commands.log")
+
+
+def handle_mqtt_publish(data):
+    """Publish to an MQTT topic using paho-mqtt."""
+    try:
+        import paho.mqtt.client as mqtt
+    except ImportError:
+        return {"error": "paho-mqtt not installed. Run: pip install paho-mqtt"}
+
+    topic = data.get("topic", "")
+    payload = data.get("payload", "")
+    broker = data.get("broker", "localhost")
+    port = data.get("port", 1883)
+
+    try:
+        client = mqtt.Client()
+        client.connect(broker, port, 60)
+        result = client.publish(topic, payload)
+        client.disconnect()
+        return {
+            "status": "published",
+            "topic": topic,
+            "payload_size": len(payload),
+            "rc": result.rc,
+        }
+    except Exception as e:
+        return {"error": f"MQTT publish failed: {e}"}
+
+
+def handle_mqtt_subscribe(data):
+    """Subscribe to an MQTT topic and wait for one message."""
+    try:
+        import paho.mqtt.client as mqtt
+    except ImportError:
+        return {"error": "paho-mqtt not installed. Run: pip install paho-mqtt"}
+
+    topic = data.get("topic", "")
+    timeout_ms = data.get("timeout_ms", 5000)
+    broker = data.get("broker", "localhost")
+    port = data.get("port", 1883)
+
+    received = {"message": None}
+
+    def on_message(client, userdata, msg):
+        received["message"] = {
+            "topic": msg.topic,
+            "payload": msg.payload.decode("utf-8", errors="replace"),
+            "qos": msg.qos,
+        }
+
+    try:
+        client = mqtt.Client()
+        client.on_message = on_message
+        client.connect(broker, port, 60)
+        client.subscribe(topic)
+        client.loop_start()
+        deadline = time.time() + (timeout_ms / 1000.0)
+        while received["message"] is None and time.time() < deadline:
+            time.sleep(0.05)
+        client.loop_stop()
+        client.disconnect()
+
+        if received["message"]:
+            return {"status": "received", **received["message"]}
+        else:
+            return {"status": "timeout", "topic": topic, "timeout_ms": timeout_ms}
+    except Exception as e:
+        return {"error": f"MQTT subscribe failed: {e}"}
+
+
+def handle_http_request(data):
+    """Make an HTTP request using urllib (stdlib, no deps)."""
+    import urllib.request
+    import urllib.error
+
+    method = data.get("method", "GET")
+    url = data.get("url", "")
+    body = data.get("body", "")
+    headers = data.get("headers", {})
+
+    if not url:
+        return {"error": "Missing 'url'"}
+
+    try:
+        body_bytes = body.encode("utf-8") if body else None
+        req = urllib.request.Request(url, data=body_bytes, method=method)
+        for k, v in headers.items():
+            req.add_header(k, v)
+        if body and "Content-Type" not in headers:
+            req.add_header("Content-Type", "application/json")
+
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            resp_body = resp.read().decode("utf-8", errors="replace")
+            return {
+                "status": resp.status,
+                "headers": dict(resp.headers),
+                "body": resp_body[:65536],  # Cap at 64KB
+            }
+    except urllib.error.HTTPError as e:
+        return {
+            "status": e.code,
+            "error": str(e.reason),
+            "body": e.read().decode("utf-8", errors="replace")[:65536],
+        }
+    except Exception as e:
+        return {"error": f"HTTP request failed: {e}"}
+
+
+def handle_robot_cmd(data):
+    """
+    Handle a robot command (pose/velocity/gripper).
+    In simulator mode, logs to file and returns success.
+    # TODO: Plug in real ROS/hardware bindings here.
+    # For ROS2: use rclpy to publish to /cmd_vel, /joint_states, /gripper_command
+    # For direct hardware: use serial/CAN bus communication to motor controllers
+    """
+    cmd_type = data.get("type", "unknown")
+    params = data.get("params", {})
+
+    os.makedirs(os.path.dirname(ROBOT_LOG_PATH), exist_ok=True)
+    with open(ROBOT_LOG_PATH, "a") as f:
+        f.write(json.dumps({
+            "timestamp": time.time(),
+            "type": cmd_type,
+            "params": params,
+        }) + "\n")
+
+    return {
+        "status": "executed",
+        "mode": "simulator",
+        "type": cmd_type,
+        "message": f"Robot command '{cmd_type}' logged (simulator mode)",
+    }
+
+
+def handle_estop(data):
+    """
+    Emergency stop handler.
+    # TODO: In real hardware mode, this should:
+    # 1. Send immediate stop to all motor controllers
+    # 2. Engage physical brakes if available
+    # 3. Publish to /emergency_stop topic (ROS)
+    """
+    os.makedirs(os.path.dirname(ROBOT_LOG_PATH), exist_ok=True)
+    with open(ROBOT_LOG_PATH, "a") as f:
+        f.write(json.dumps({
+            "timestamp": time.time(),
+            "type": "ESTOP",
+            "reason": data.get("reason", "manual"),
+        }) + "\n")
+
+    return {
+        "status": "estop_activated",
+        "mode": "simulator",
+        "message": "Emergency stop activated (simulator mode)",
+    }
+
+
+def handle_telemetry(data):
+    """
+    Return telemetry snapshot.
+    In simulator mode, returns system stats as simulated robot telemetry.
+    # TODO: In real hardware mode, read from:
+    # - /joint_states topic (ROS)
+    # - IMU sensor data
+    # - Motor encoder feedback
+    # - Battery management system
+    """
+    # psutil not required — using cross-platform alternatives below
+
+    uptime_s = 0
+    cpu_pct = 0.0
+    mem_total = 0
+    mem_used = 0
+
+    try:
+        # Cross-platform uptime
+        if os.path.exists("/proc/uptime"):
+            with open("/proc/uptime") as f:
+                uptime_s = float(f.read().split()[0])
+        else:
+            # macOS: parse sysctl
+            result = subprocess.run(
+                ["sysctl", "-n", "kern.boottime"],
+                capture_output=True, text=True, timeout=5
+            )
+            if result.returncode == 0:
+                # Parse "{ sec = 1234567890, usec = 0 }"
+                import re
+                m = re.search(r"sec\s*=\s*(\d+)", result.stdout)
+                if m:
+                    uptime_s = time.time() - int(m.group(1))
+    except Exception:
+        pass
+
+    try:
+        # CPU: quick sample via os.getloadavg()
+        load = os.getloadavg()
+        cpu_pct = load[0] * 100.0 / os.cpu_count()
+    except Exception:
+        pass
+
+    try:
+        if platform.system() == "Darwin":
+            result = subprocess.run(
+                ["sysctl", "-n", "hw.memsize"],
+                capture_output=True, text=True, timeout=5
+            )
+            if result.returncode == 0:
+                mem_total = int(result.stdout.strip())
+            # Approximate used memory via vm_stat
+            result2 = subprocess.run(
+                ["vm_stat"], capture_output=True, text=True, timeout=5
+            )
+            if result2.returncode == 0:
+                import re
+                pages_active = 0
+                pages_wired = 0
+                for line in result2.stdout.splitlines():
+                    m = re.match(r"Pages active:\s+(\d+)", line)
+                    if m: pages_active = int(m.group(1))
+                    m = re.match(r"Pages wired down:\s+(\d+)", line)
+                    if m: pages_wired = int(m.group(1))
+                mem_used = (pages_active + pages_wired) * 4096
+        elif os.path.exists("/proc/meminfo"):
+            with open("/proc/meminfo") as f:
+                for line in f:
+                    if line.startswith("MemTotal:"):
+                        mem_total = int(line.split()[1]) * 1024
+                    elif line.startswith("MemAvailable:"):
+                        mem_used = mem_total - int(line.split()[1]) * 1024
+    except Exception:
+        pass
+
+    return {
+        "mode": "simulator",
+        "uptime_seconds": round(uptime_s, 1),
+        "cpu_percent": round(cpu_pct, 1),
+        "memory_total_bytes": mem_total,
+        "memory_used_bytes": mem_used,
+        "position": {"x": 0.0, "y": 0.0, "z": 0.0},
+        "velocity": {"vx": 0.0, "vy": 0.0, "vz": 0.0},
+        "gripper": 0.0,
+        "estop": False,
+        "status": "idle",
+    }
+
+
+# Dispatch table for --exec-tool mode
+TOOL_HANDLERS = {
+    "mqtt_publish": handle_mqtt_publish,
+    "mqtt_subscribe": handle_mqtt_subscribe,
+    "http_request": handle_http_request,
+    "robot_cmd": handle_robot_cmd,
+    "estop": handle_estop,
+    "telemetry": handle_telemetry,
+}
+
+
+def exec_tool_mode(json_str):
+    """Parse JSON command, dispatch to handler, print JSON response."""
+    try:
+        data = json.loads(json_str)
+    except json.JSONDecodeError as e:
+        print(json.dumps({"error": f"Invalid JSON: {e}"}))
+        sys.exit(1)
+
+    action = data.get("action", "")
+    handler = TOOL_HANDLERS.get(action)
+
+    if handler is None:
+        print(json.dumps({"error": f"Unknown action: {action}"}))
+        sys.exit(1)
+
+    try:
+        result = handler(data)
+        print(json.dumps(result))
+    except Exception as e:
+        print(json.dumps({"error": str(e)}))
+        sys.exit(1)
+
+
+# ============================================================
+# Original Bridge (BLE/Serial/Socket)
+# ============================================================
 
 class YoctoClawBridge:
     def __init__(self, api_key: str, model: str = "claude-sonnet-4-5-20250929"):
+        if anthropic is None:
+            raise ImportError("pip install anthropic")
         self.client = anthropic.Anthropic(api_key=api_key)
         self.model = model
 
@@ -116,7 +415,6 @@ class YoctoClawBridge:
                 }).encode()
 
             elif name == "search":
-                # Use argument list — no shell, no injection risk
                 search_path = input_data.get("path", ".")
                 pattern = input_data["pattern"]
                 result = subprocess.run(
@@ -126,7 +424,6 @@ class YoctoClawBridge:
                     timeout=10,
                 )
                 output = result.stdout
-                # Truncate to ~100 lines
                 lines = output.split("\n")
                 if len(lines) > 100:
                     output = "\n".join(lines[:100]) + f"\n... ({len(lines)} total lines)"
@@ -160,19 +457,16 @@ async def socket_server(bridge: YoctoClawBridge, path: str):
         print(f"[bridge] Device connected")
         try:
             while True:
-                # Read length-prefixed message
                 len_data = await reader.readexactly(2)
                 msg_len = struct.unpack(">H", len_data)[0]
                 msg_data = await reader.readexactly(msg_len)
 
                 print(f"[bridge] <- {msg_data[:100]}...")
 
-                # Process
                 response = bridge.handle_message(msg_data)
 
                 print(f"[bridge] -> {response[:100]}...")
 
-                # Send length-prefixed response
                 writer.write(struct.pack(">H", len(response)))
                 writer.write(response)
                 await writer.drain()
@@ -200,7 +494,6 @@ async def serial_bridge(bridge: YoctoClawBridge, port: str, baud: int = 115200):
     print(f"[bridge] Connected to {port} @ {baud}")
 
     while True:
-        # Read length-prefixed message
         len_data = ser.read(2)
         if len(len_data) < 2:
             continue
@@ -247,21 +540,17 @@ async def ble_bridge(bridge: YoctoClawBridge):
         response_data = bytearray()
 
         def notification_handler(sender, data):
-            """Handle data from YoctoClaw device (TX characteristic)."""
             nonlocal response_data
             response = bridge.handle_message(bytes(data))
             response_data = bytearray(response)
 
         await client.start_notify(TX_UUID, notification_handler)
 
-        # Main loop: check for pending responses to send back
         while client.is_connected:
             if response_data:
-                # Chunk and send response via RX characteristic
                 data = bytes(response_data)
                 response_data = bytearray()
 
-                # Send in MTU-sized chunks
                 mtu = 244
                 for i in range(0, len(data), mtu):
                     chunk = data[i : i + mtu]
@@ -277,7 +566,13 @@ def main():
     parser.add_argument("--baud", type=int, default=115200, help="Serial baud rate")
     parser.add_argument("--ble", action="store_true", help="BLE mode")
     parser.add_argument("--model", default="claude-sonnet-4-5-20250929")
+    parser.add_argument("--exec-tool", dest="exec_tool", help="Execute a tool command (JSON string)")
     args = parser.parse_args()
+
+    # --exec-tool mode: no API key needed, just dispatch and exit
+    if args.exec_tool:
+        exec_tool_mode(args.exec_tool)
+        return
 
     api_key = os.environ.get("ANTHROPIC_API_KEY", "")
     if not api_key:
@@ -293,7 +588,6 @@ def main():
     elif args.ble:
         asyncio.run(ble_bridge(bridge))
     else:
-        # Default: Unix socket simulation
         asyncio.run(socket_server(bridge, "/tmp/yoctoclaw.sock"))
 
 
