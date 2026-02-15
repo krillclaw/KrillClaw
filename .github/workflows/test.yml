@@ -1,0 +1,39 @@
+name: Test
+on: [push, pull_request]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: goto-bus-stop/setup-zig@v2
+        with:
+          version: 0.13.0
+
+      - name: Build (debug)
+        run: zig build
+
+      - name: Unit tests
+        run: zig build test
+
+      - name: Build (release)
+        run: zig build -Doptimize=ReleaseSmall
+
+      - name: Binary size gate
+        run: |
+          SIZE=$(stat --printf="%s" zig-out/bin/yoctoclaw)
+          echo "Binary size: $SIZE bytes"
+          [ "$SIZE" -lt 307200 ] || { echo "FAIL: >300KB"; exit 1; }
+
+      - name: Smoke test
+        run: |
+          ./zig-out/bin/yoctoclaw --version
+          ./zig-out/bin/yoctoclaw --help
+
+      - name: Integration tests
+        run: bash test/integration.sh
+
+      - name: Build with BLE flag
+        run: zig build -Dble=true
+
+      - name: Build with Serial flag
+        run: zig build -Dserial=true
