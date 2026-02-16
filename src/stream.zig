@@ -26,6 +26,7 @@ pub const StreamParser = struct {
     // Current content block index and type
     block_index: u32 = 0,
     in_tool_use: bool = false,
+    current_tool_index: ?u32 = null,
 
     pub fn init(allocator: std.mem.Allocator) StreamParser {
         return initWithProvider(allocator, .claude);
@@ -214,27 +215,63 @@ pub const StreamParser = struct {
 
         // Check for tool_calls in delta
         if (json.extractArray(delta, "tool_calls")) |tool_calls| {
-            // Starting or continuing tool call
-            if (!self.in_tool_use) {
-                // New tool call — flush text
-                try self.flushText();
-                self.in_tool_use = true;
-                self.current_tool_input.clearRetainingCapacity();
-            }
+            // OpenAI streams tool_calls as an array with indexed elements.
+            // Each element has an "index" field identifying which tool call it belongs to.
+            // We iterate all objects in the array to handle multiple tool calls.
+            var tc_pos: usize = 0;
+            while (tc_pos < tool_calls.len) : (tc_pos += 1) {
+                if (tool_calls[tc_pos] != '{') continue;
 
-            // Extract function info if present (first chunk has id + function.name)
-            if (json.extractString(tool_calls, "id")) |id| {
-                if (self.current_tool_id) |old| self.allocator.free(old);
-                self.current_tool_id = try self.allocator.dupe(u8, id);
-            }
-            if (json.extractObject(tool_calls, "function")) |func| {
-                if (json.extractString(func, "name")) |name| {
-                    if (self.current_tool_name) |old| self.allocator.free(old);
-                    self.current_tool_name = try self.allocator.dupe(u8, name);
+                // Extract this tool call object
+                var depth: u32 = 0;
+                var in_str = false;
+                var tc_end = tc_pos;
+                while (tc_end < tool_calls.len) : (tc_end += 1) {
+                    if (tool_calls[tc_end] == '\\' and in_str) {
+                        tc_end += 1;
+                        continue;
+                    }
+                    if (tool_calls[tc_end] == '"') in_str = !in_str;
+                    if (!in_str) {
+                        if (tool_calls[tc_end] == '{') depth += 1;
+                        if (tool_calls[tc_end] == '}') {
+                            depth -= 1;
+                            if (depth == 0) break;
+                        }
+                    }
                 }
-                if (json.extractString(func, "arguments")) |args| {
-                    try self.current_tool_input.appendSlice(args);
+
+                const tc_obj = tool_calls[tc_pos .. tc_end + 1];
+                const tc_index = json.extractInt(tc_obj, "index") orelse 0;
+
+                // If this is a different tool call index, flush the previous one
+                if (self.in_tool_use and self.current_tool_index != null and self.current_tool_index.? != tc_index) {
+                    try self.flushToolUse();
                 }
+
+                if (!self.in_tool_use) {
+                    try self.flushText();
+                    self.in_tool_use = true;
+                    self.current_tool_index = tc_index;
+                    self.current_tool_input.clearRetainingCapacity();
+                }
+
+                // Extract function info if present (first chunk has id + function.name)
+                if (json.extractString(tc_obj, "id")) |id| {
+                    if (self.current_tool_id) |old| self.allocator.free(old);
+                    self.current_tool_id = try self.allocator.dupe(u8, id);
+                }
+                if (json.extractObject(tc_obj, "function")) |func| {
+                    if (json.extractString(func, "name")) |name| {
+                        if (self.current_tool_name) |old| self.allocator.free(old);
+                        self.current_tool_name = try self.allocator.dupe(u8, name);
+                    }
+                    if (json.extractString(func, "arguments")) |args| {
+                        try self.current_tool_input.appendSlice(args);
+                    }
+                }
+
+                tc_pos = tc_end;
             }
         } else {
             // Text content delta
@@ -285,6 +322,7 @@ pub const StreamParser = struct {
         self.current_tool_name = null;
         self.current_tool_input.clearRetainingCapacity();
         self.in_tool_use = false;
+        self.current_tool_index = null;
     }
 
     /// Build the final ApiResponse from accumulated stream events.
