@@ -74,6 +74,7 @@ pub const Client = struct {
 
         // Build headers based on provider
         var header_buf: [8192]u8 = undefined;
+        var auth_buf: [512]u8 = undefined;
 
         const extra_headers: []const std.http.Header = switch (config.provider) {
             .claude => &.{
@@ -82,7 +83,6 @@ pub const Client = struct {
                 .{ .name = "content-type", .value = "application/json" },
             },
             .openai => blk: {
-                var auth_buf: [512]u8 = undefined;
                 const auth = std.fmt.bufPrint(&auth_buf, "Bearer {s}", .{config.api_key}) catch return ApiError.OutOfMemory;
                 break :blk &.{
                     .{ .name = "Authorization", .value = auth },
