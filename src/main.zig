@@ -139,6 +139,7 @@ test {
     _ = @import("json.zig");
     _ = @import("api.zig");
     _ = @import("stream.zig");
+    _ = @import("retry.zig");
     _ = @import("tools.zig");
     _ = @import("context.zig");
     _ = @import("config.zig");
@@ -147,6 +148,8 @@ test {
     if (build_options.enable_ble) {
         _ = @import("ble.zig");
     }
+    _ = @import("memory/filesystem.zig");
+    _ = @import("memory/store.zig");
     if (build_options.enable_serial) {
         _ = @import("serial.zig");
     }

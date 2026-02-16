@@ -8,6 +8,7 @@ const json = @import("json.zig");
 /// allowing real-time token display.
 pub const StreamParser = struct {
     allocator: std.mem.Allocator,
+    provider: types.Provider = .claude,
     line_buf: std.ArrayList(u8),
     event_type: ?[]const u8 = null,
 
@@ -27,8 +28,13 @@ pub const StreamParser = struct {
     in_tool_use: bool = false,
 
     pub fn init(allocator: std.mem.Allocator) StreamParser {
+        return initWithProvider(allocator, .claude);
+    }
+
+    pub fn initWithProvider(allocator: std.mem.Allocator, provider: types.Provider) StreamParser {
         return .{
             .allocator = allocator,
+            .provider = provider,
             .line_buf = std.ArrayList(u8).init(allocator),
             .content_blocks = std.ArrayList(types.ContentBlock).init(allocator),
             .current_text = std.ArrayList(u8).init(allocator),
@@ -65,7 +71,10 @@ pub const StreamParser = struct {
                     self.event_type = try self.allocator.dupe(u8, line[7..]);
                 } else if (std.mem.startsWith(u8, line, "data: ")) {
                     const event_data = line[6..];
-                    const done = try self.processEvent(event_data, on_text);
+                    const done = switch (self.provider) {
+                        .claude => try self.processEvent(event_data, on_text),
+                        .openai, .ollama => try self.processOpenAiEvent(event_data, on_text),
+                    };
                     if (done) return true;
                 }
 
@@ -157,6 +166,90 @@ pub const StreamParser = struct {
             // Flush any remaining text
             try self.flushText();
             return true;
+        }
+
+        return false;
+    }
+
+
+    /// Process an OpenAI-format SSE data line.
+    /// OpenAI sends: data: {"id":"...","choices":[{"delta":{"content":"text"},...}],...}
+    /// End signal: data: [DONE]
+    fn processOpenAiEvent(self: *StreamParser, data: []const u8, on_text: ?*const fn ([]const u8) void) !bool {
+        // Check for stream termination
+        if (std.mem.eql(u8, data, "[DONE]")) {
+            try self.flushText();
+            if (self.in_tool_use) try self.flushToolUse();
+            return true;
+        }
+
+        // Extract response ID
+        if (self.response_id == null) {
+            if (json.extractString(data, "id")) |id_str|
+                self.response_id = try self.allocator.dupe(u8, id_str);
+        }
+
+        // Usage (may appear in final chunk)
+        if (json.extractObject(data, "usage")) |usage| {
+            if (json.extractInt(usage, "prompt_tokens")) |pt| self.input_tokens = pt;
+            if (json.extractInt(usage, "completion_tokens")) |ct| self.output_tokens = ct;
+        }
+
+        // Extract choices array, then first choice object
+        const choices = json.extractArray(data, "choices") orelse return false;
+
+        // Check finish_reason
+        if (json.extractString(choices, "finish_reason")) |reason| {
+            if (std.mem.eql(u8, reason, "stop")) {
+                self.stop_reason = .end_turn;
+            } else if (std.mem.eql(u8, reason, "tool_calls")) {
+                self.stop_reason = .tool_use;
+            } else if (std.mem.eql(u8, reason, "length")) {
+                self.stop_reason = .max_tokens;
+            }
+        }
+
+        // Extract delta object
+        const delta = json.extractObject(choices, "delta") orelse return false;
+
+        // Check for tool_calls in delta
+        if (json.extractArray(delta, "tool_calls")) |tool_calls| {
+            // Starting or continuing tool call
+            if (!self.in_tool_use) {
+                // New tool call — flush text
+                try self.flushText();
+                self.in_tool_use = true;
+                self.current_tool_input.clearRetainingCapacity();
+            }
+
+            // Extract function info if present (first chunk has id + function.name)
+            if (json.extractString(tool_calls, "id")) |id| {
+                if (self.current_tool_id) |old| self.allocator.free(old);
+                self.current_tool_id = try self.allocator.dupe(u8, id);
+            }
+            if (json.extractObject(tool_calls, "function")) |func| {
+                if (json.extractString(func, "name")) |name| {
+                    if (self.current_tool_name) |old| self.allocator.free(old);
+                    self.current_tool_name = try self.allocator.dupe(u8, name);
+                }
+                if (json.extractString(func, "arguments")) |args| {
+                    try self.current_tool_input.appendSlice(args);
+                }
+            }
+        } else {
+            // Text content delta
+            if (self.in_tool_use) {
+                // Tool call ended, text starting
+                try self.flushToolUse();
+            }
+            if (json.extractString(delta, "content")) |text| {
+                if (text.len > 0) {
+                    try self.current_text.appendSlice(text);
+                    if (on_text) |callback| {
+                        callback(text);
+                    }
+                }
+            }
         }
 
         return false;
@@ -359,4 +452,66 @@ test "chunked feed" {
 
     try std.testing.expectEqual(@as(usize, 1), resp.content.len);
     try std.testing.expectEqualStrings("Hello world", resp.content[0].text.?);
+}
+
+const openai_text_sse =
+    "data: {\"id\":\"chatcmpl-abc\",\"choices\":[{\"delta\":{\"role\":\"assistant\",\"content\":\"\"},\"index\":0,\"finish_reason\":null}]}\n" ++
+    "\n" ++
+    "data: {\"id\":\"chatcmpl-abc\",\"choices\":[{\"delta\":{\"content\":\"Hello\"},\"index\":0,\"finish_reason\":null}]}\n" ++
+    "\n" ++
+    "data: {\"id\":\"chatcmpl-abc\",\"choices\":[{\"delta\":{\"content\":\" world\"},\"index\":0,\"finish_reason\":null}]}\n" ++
+    "\n" ++
+    "data: {\"id\":\"chatcmpl-abc\",\"choices\":[{\"delta\":{},\"index\":0,\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":5}}\n" ++
+    "\n" ++
+    "data: [DONE]\n" ++
+    "\n";
+
+test "parse OpenAI text streaming" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    var parser = StreamParser.initWithProvider(alloc, .openai);
+    defer parser.deinit();
+
+    const done = try parser.feed(openai_text_sse, null);
+    try std.testing.expect(done);
+
+    const resp = try parser.toResponse();
+
+    try std.testing.expectEqual(@as(usize, 1), resp.content.len);
+    try std.testing.expectEqual(types.ContentType.text, resp.content[0].type);
+    try std.testing.expectEqualStrings("Hello world", resp.content[0].text.?);
+    try std.testing.expectEqual(types.StopReason.end_turn, resp.stop_reason);
+    try std.testing.expectEqual(@as(u32, 10), resp.input_tokens);
+    try std.testing.expectEqual(@as(u32, 5), resp.output_tokens);
+}
+
+const openai_tool_sse =
+    "data: {\"id\":\"chatcmpl-xyz\",\"choices\":[{\"delta\":{\"role\":\"assistant\",\"content\":null,\"tool_calls\":[{\"index\":0,\"id\":\"call_abc\",\"type\":\"function\",\"function\":{\"name\":\"bash\",\"arguments\":\"\"}}]},\"index\":0,\"finish_reason\":null}]}\n" ++
+    "\n" ++
+    "data: {\"id\":\"chatcmpl-xyz\",\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"{\\\"command\\\":\\\"ls\\\"}\"}}]},\"index\":0,\"finish_reason\":null}]}\n" ++
+    "\n" ++
+    "data: {\"id\":\"chatcmpl-xyz\",\"choices\":[{\"delta\":{},\"index\":0,\"finish_reason\":\"tool_calls\"}]}\n" ++
+    "\n" ++
+    "data: [DONE]\n" ++
+    "\n";
+
+test "parse OpenAI tool_calls streaming" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    var parser = StreamParser.initWithProvider(alloc, .openai);
+    defer parser.deinit();
+
+    const done = try parser.feed(openai_tool_sse, null);
+    try std.testing.expect(done);
+
+    const resp = try parser.toResponse();
+
+    try std.testing.expectEqual(@as(usize, 1), resp.content.len);
+    try std.testing.expectEqual(types.ContentType.tool_use, resp.content[0].type);
+    const tu = resp.content[0].tool_use.?;
+    try std.testing.expectEqualStrings("call_abc", tu.id);
+    try std.testing.expectEqualStrings("bash", tu.name);
+    try std.testing.expectEqual(types.StopReason.tool_use, resp.stop_reason);
 }

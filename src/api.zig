@@ -2,6 +2,7 @@ const std = @import("std");
 const types = @import("types.zig");
 const json = @import("json.zig");
 const StreamParser = @import("stream.zig").StreamParser;
+const retry = @import("retry.zig");
 
 const CLAUDE_API_VERSION = "2023-06-01";
 
@@ -20,12 +21,14 @@ pub const Client = struct {
     allocator: std.mem.Allocator,
     config: types.Config,
     http_client: std.http.Client,
+    retry_config: retry.RetryConfig,
 
     pub fn init(allocator: std.mem.Allocator, config: types.Config) Client {
         return .{
             .allocator = allocator,
             .config = config,
             .http_client = std.http.Client{ .allocator = allocator },
+            .retry_config = retry.default_config,
         };
     }
 
@@ -120,7 +123,7 @@ pub const Client = struct {
 
         // Streaming response
         if (config.streaming) {
-            return self.readStreaming(req.reader(), on_text);
+            return self.readStreaming(req.reader(), on_text, config.provider);
         }
 
         // Non-streaming response
@@ -130,8 +133,8 @@ pub const Client = struct {
         return parseResponse(self.allocator, resp_body, config.provider);
     }
 
-    fn readStreaming(self: *Client, reader: anytype, on_text: ?*const fn ([]const u8) void) !types.ApiResponse {
-        var parser = StreamParser.init(self.allocator);
+    fn readStreaming(self: *Client, reader: anytype, on_text: ?*const fn ([]const u8) void, provider: types.Provider) !types.ApiResponse {
+        var parser = StreamParser.initWithProvider(self.allocator, provider);
         defer parser.deinit();
 
         var buf: [4096]u8 = undefined;
@@ -146,6 +149,43 @@ pub const Client = struct {
         return parser.toResponse();
     }
 };
+
+/// Extract a header value from the raw header buffer by name (case-insensitive).
+fn extractHeader(header_buf: []const u8, name: []const u8) ?[]const u8 {
+    // Simple scan for "name: value\r\n" pattern in header buffer
+    var i: usize = 0;
+    while (i + name.len + 2 < header_buf.len) {
+        // Check if we hit a name match (case-insensitive)
+        var match = true;
+        for (0..name.len) |j| {
+            if (i + j >= header_buf.len) {
+                match = false;
+                break;
+            }
+            const a = if (header_buf[i + j] >= A and header_buf[i + j] <= Z) header_buf[i + j] + 32 else header_buf[i + j];
+            const b = if (name[j] >= A and name[j] <= Z) name[j] + 32 else name[j];
+            if (a != b) {
+                match = false;
+                break;
+            }
+        }
+        if (match and i + name.len < header_buf.len and header_buf[i + name.len] == :) {
+            // Found header, extract value until \r or \n
+            var start = i + name.len + 1;
+            while (start < header_buf.len and header_buf[start] ==  ) start += 1;
+            var end = start;
+            while (end < header_buf.len and header_buf[end] !=  and header_buf[end] != 
+ and header_buf[end] != 0) end += 1;
+            if (end > start) return header_buf[start..end];
+            return null;
+        }
+        // Skip to next line
+        while (i < header_buf.len and header_buf[i] != 
+) i += 1;
+        i += 1;
+    }
+    return null;
+}
 
 /// Parse a non-streaming Claude API response.
 fn parseResponse(allocator: std.mem.Allocator, body: []const u8, provider: types.Provider) !types.ApiResponse {
