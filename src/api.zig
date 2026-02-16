@@ -2,6 +2,7 @@ const std = @import("std");
 const types = @import("types.zig");
 const json = @import("json.zig");
 const StreamParser = @import("stream.zig").StreamParser;
+const retry = @import("retry.zig");
 
 const CLAUDE_API_VERSION = "2023-06-01";
 
@@ -20,12 +21,14 @@ pub const Client = struct {
     allocator: std.mem.Allocator,
     config: types.Config,
     http_client: std.http.Client,
+    retry_config: retry.RetryConfig,
 
     pub fn init(allocator: std.mem.Allocator, config: types.Config) Client {
         return .{
             .allocator = allocator,
             .config = config,
             .http_client = std.http.Client{ .allocator = allocator },
+            .retry_config = retry.default_config,
         };
     }
 
@@ -73,7 +76,6 @@ pub const Client = struct {
         const uri = std.Uri.parse(url) catch return ApiError.HttpError;
 
         // Build headers based on provider
-        var header_buf: [8192]u8 = undefined;
         var auth_buf: [512]u8 = undefined;
 
         const extra_headers: []const std.http.Header = switch (config.provider) {
@@ -94,44 +96,94 @@ pub const Client = struct {
             },
         };
 
-        var req = self.http_client.open(.POST, uri, .{
-            .server_header_buffer = &header_buf,
-            .extra_headers = extra_headers,
-        }) catch return ApiError.ConnectionRefused;
-        defer req.deinit();
-
-        req.transfer_encoding = .{ .content_length = body.len };
-        req.send() catch return ApiError.HttpError;
-        req.writeAll(body) catch return ApiError.HttpError;
-        req.finish() catch return ApiError.HttpError;
-        req.wait() catch return ApiError.HttpError;
-
-        if (req.response.status != .ok) {
-            // Read error body for debugging
-            _ = req.reader().readAllAlloc(self.allocator, 1024 * 64) catch {};
-
-            return switch (req.response.status) {
-                .too_many_requests => ApiError.RateLimited,
-                .unauthorized => ApiError.AuthError,
-                .internal_server_error, .bad_gateway, .service_unavailable => ApiError.ServerError,
-                else => ApiError.HttpError,
+        // Retry loop
+        var attempt: u32 = 0;
+        while (true) {
+            var header_buf: [8192]u8 = undefined;
+            var req = self.http_client.open(.POST, uri, .{
+                .server_header_buffer = &header_buf,
+                .extra_headers = extra_headers,
+            }) catch {
+                // Connection error — treat as retryable (503-like)
+                const decision = retry.shouldRetry(self.retry_config, attempt, 503, null);
+                switch (decision) {
+                    .retry => |delay| {
+                        retry.sleep(delay);
+                        attempt += 1;
+                        continue;
+                    },
+                    .abort => return ApiError.ConnectionRefused,
+                }
             };
+
+            req.transfer_encoding = .{ .content_length = body.len };
+
+            // Send request phases — handle errors as connection issues
+            const send_ok = blk: {
+                req.send() catch break :blk false;
+                req.writeAll(body) catch break :blk false;
+                req.finish() catch break :blk false;
+                req.wait() catch break :blk false;
+                break :blk true;
+            };
+
+            if (!send_ok) {
+                req.deinit();
+                const decision = retry.shouldRetry(self.retry_config, attempt, 503, null);
+                switch (decision) {
+                    .retry => |delay| {
+                        retry.sleep(delay);
+                        attempt += 1;
+                        continue;
+                    },
+                    .abort => return ApiError.HttpError,
+                }
+            }
+
+            if (req.response.status != .ok) {
+                const status_code: u16 = @intFromEnum(req.response.status);
+
+                // Try to extract Retry-After header for rate limiting
+                const retry_after_val = extractHeader(&header_buf, "retry-after");
+
+                // Read and discard error body
+                _ = req.reader().readAllAlloc(self.allocator, 1024 * 64) catch {};
+                req.deinit();
+
+                const decision = retry.shouldRetry(self.retry_config, attempt, status_code, retry_after_val);
+                switch (decision) {
+                    .retry => |delay| {
+                        retry.sleep(delay);
+                        attempt += 1;
+                        continue;
+                    },
+                    .abort => {
+                        return switch (req.response.status) {
+                            .too_many_requests => ApiError.RateLimited,
+                            .unauthorized => ApiError.AuthError,
+                            .internal_server_error, .bad_gateway, .service_unavailable => ApiError.ServerError,
+                            else => ApiError.HttpError,
+                        };
+                    },
+                }
+            }
+
+            // Success path
+            defer req.deinit();
+
+            if (config.streaming) {
+                return self.readStreaming(req.reader(), on_text, config.provider);
+            }
+
+            const resp_body = req.reader().readAllAlloc(self.allocator, 1024 * 1024) catch return ApiError.HttpError;
+            defer self.allocator.free(resp_body);
+
+            return parseResponse(self.allocator, resp_body, config.provider);
         }
-
-        // Streaming response
-        if (config.streaming) {
-            return self.readStreaming(req.reader(), on_text);
-        }
-
-        // Non-streaming response
-        const resp_body = req.reader().readAllAlloc(self.allocator, 1024 * 1024) catch return ApiError.HttpError;
-        defer self.allocator.free(resp_body);
-
-        return parseResponse(self.allocator, resp_body, config.provider);
     }
 
-    fn readStreaming(self: *Client, reader: anytype, on_text: ?*const fn ([]const u8) void) !types.ApiResponse {
-        var parser = StreamParser.init(self.allocator);
+    fn readStreaming(self: *Client, reader: anytype, on_text: ?*const fn ([]const u8) void, provider: types.Provider) !types.ApiResponse {
+        var parser = StreamParser.initWithProvider(self.allocator, provider);
         defer parser.deinit();
 
         var buf: [4096]u8 = undefined;
@@ -146,6 +198,37 @@ pub const Client = struct {
         return parser.toResponse();
     }
 };
+
+/// Extract a header value from the raw header buffer by name (case-insensitive).
+fn extractHeader(header_buf: []const u8, name: []const u8) ?[]const u8 {
+    var i: usize = 0;
+    while (i + name.len + 2 < header_buf.len) {
+        var match = true;
+        for (0..name.len) |j| {
+            if (i + j >= header_buf.len) {
+                match = false;
+                break;
+            }
+            const a = if (header_buf[i + j] >= 'A' and header_buf[i + j] <= 'Z') header_buf[i + j] + 32 else header_buf[i + j];
+            const b = if (name[j] >= 'A' and name[j] <= 'Z') name[j] + 32 else name[j];
+            if (a != b) {
+                match = false;
+                break;
+            }
+        }
+        if (match and i + name.len < header_buf.len and header_buf[i + name.len] == ':') {
+            var start = i + name.len + 1;
+            while (start < header_buf.len and header_buf[start] == ' ') start += 1;
+            var end = start;
+            while (end < header_buf.len and header_buf[end] != '\r' and header_buf[end] != '\n' and header_buf[end] != 0) end += 1;
+            if (end > start) return header_buf[start..end];
+            return null;
+        }
+        while (i < header_buf.len and header_buf[i] != '\n') i += 1;
+        i += 1;
+    }
+    return null;
+}
 
 /// Parse a non-streaming Claude API response.
 fn parseResponse(allocator: std.mem.Allocator, body: []const u8, provider: types.Provider) !types.ApiResponse {
@@ -224,7 +307,6 @@ fn parseOpenAiResponse(allocator: std.mem.Allocator, body: []const u8) !types.Ap
 }
 
 fn parseOpenAiToolCalls(allocator: std.mem.Allocator, tool_calls_json: []const u8, blocks: *std.ArrayList(types.ContentBlock)) !void {
-    // Walk through array finding objects
     var pos: usize = 0;
     while (pos < tool_calls_json.len) : (pos += 1) {
         if (tool_calls_json[pos] != '{') continue;
