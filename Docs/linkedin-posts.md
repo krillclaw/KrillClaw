@@ -4,7 +4,7 @@
 
 **We just open-sourced the world's smallest coding agent.**
 
-YoctoClaw is a fully autonomous AI coding agent written in 3,317 lines of Zig. The binary is 180KB — smaller than most JPEGs.
+YoctoClaw is a fully autonomous AI coding agent written in ~3,500 lines of Zig. The binary is 180KB — smaller than most JPEGs.
 
 It does what Claude Code does: bash, read files, write files, edit files, search, list. It connects to Claude, OpenAI, or Ollama. It loops until the task is done.
 
@@ -12,13 +12,13 @@ The difference? Claude Code is ~50MB with 500 npm dependencies. YoctoClaw is 180
 
 Same agent loop. 1000x smaller.
 
-We also built BLE and serial transports, so it can run on a $3 ESP32 or an nRF5340 dev kit. The agent brain lives on the device. Your phone bridges it to the cloud.
+We built three compile-time profiles (coding, IoT, robotics) with BLE and serial transports, so it can run on a $3 ESP32 or an nRF5340 dev kit. The agent brain lives on the device. Your phone bridges it to the cloud.
 
-Why does this matter? Because the "agent harness" — the code that orchestrates LLM calls — is simpler than you think. The complexity in existing agents isnt the harness. It\s the platform around it.
+Why does this matter? Because the "agent harness" — the code that orchestrates LLM calls — is simpler than you think. The complexity in existing agents isn't the harness. It's the platform around it.
 
-MIT licensed. 13 Zig source files. You can read the entire codebase in an hour.
+MIT licensed. 16 Zig source files. You can read the entire codebase in an hour.
 
-→ github.com/yoctoclaw/TinyDancer
+→ https://github.com/yoctoclaw/TinyDancer
 
 #AI #CodingAgent #Zig #OpenSource #Embedded
 
@@ -36,18 +36,22 @@ The architecture:
 • agent.zig (250 lines) — the core loop with FNV-1a stuck-loop detection
 • api.zig (329 lines) — multi-provider HTTP client for Claude, OpenAI, Ollama
 • stream.zig (344 lines) — SSE streaming parser with safe string ownership
-• tools.zig (534 lines) — 6 tools with injection-safe file operations
+• tools_coding.zig (280 lines) — 7 coding tools with injection-safe file operations
+• tools_iot.zig (95 lines) — 6 IoT bridge tools with rate limiting
+• tools_robotics.zig (155 lines) — 3 robot control tools with safety bounds
 • json.zig (500 lines) — hand-rolled JSON, no dependencies
 
-13 files. 3,317 lines total. 39 unit tests. CI with a binary size gate (<300KB).
+16 files. ~3,500 lines total (core + tests). 39 unit tests. CI with a binary size gate (<300KB).
 
 The transport layer uses vtables — the same binary works over HTTP (desktop), BLE (smart ring), or serial (dev board). Feature flags keep unused transports out of the binary.
 
 For embedded targets, we built a fixed arena allocator with preset sizes (4KB–256KB). No OS heap required. Reset between agent turns. Fits on an nRF5340 with 512KB RAM.
 
+We added compile-time profiles that swap entire tool sets: coding (7 tools), IoT (6 MQTT/HTTP tools), robotics (3 safety-bounded control tools). Only the selected profile compiles — zero runtime overhead.
+
 No garbage collector. No runtime. Compiles in ~1 second.
 
-→ github.com/yoctoclaw/TinyDancer
+→ https://github.com/yoctoclaw/TinyDancer
 
 #Zig #SystemsProgramming #AI #Embedded
 
@@ -76,8 +80,8 @@ For comparison:
 
 Zig hit the sweet spot: systems-level control with modern ergonomics.
 
-If you're building performance-critical tools and haven't tried Zig — start here. You can read our entire 3,317-line codebase in an afternoon.
+If you're building performance-critical tools and haven't tried Zig — start here. You can read our entire ~3,500-line codebase in an afternoon.
 
-→ github.com/yoctoclaw/TinyDancer
+→ https://github.com/yoctoclaw/TinyDancer
 
 #Zig #ProgrammingLanguages #SystemsProgramming #AI

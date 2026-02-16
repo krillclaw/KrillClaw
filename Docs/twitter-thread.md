@@ -3,11 +3,11 @@
 ## Thread (10 tweets)
 
 ### 1/10 — The Hook
-We built a full coding agent in 3,317 lines of Zig.
+We built a full coding agent in ~3,500 lines of Zig.
 
 The binary is 180KB. Smaller than most JPEGs.
 
-It connects to Claude, OpenAI, or Ollama. Has 6 tools. Loops until done.
+It connects to Claude, OpenAI, or Ollama. Has 7 coding tools. Loops until done.
 
 Zero dependencies. Zero runtime. Zero GC.
 
@@ -24,13 +24,14 @@ Aider: 50MB, 150MB RAM, 100 deps
 Same core job. 1000x less.
 
 ### 3/10 — What It Does
-YoctoClaw has 6 tools:
+YoctoClaw coding profile has 7 tools:
 • bash — run any shell command
 • read_file
 • write_file
 • edit_file — find-and-replace
 • search — substring across files
 • list_files — with glob filter
+• apply_patch — unified diff format
 
 SSE streaming. Context window management. Stuck-loop detection.
 
@@ -46,13 +47,13 @@ One binary, three providers:
 Switch with a flag. No lock-in.
 
 ### 5/10 — The Architecture
-13 files. That's it.
+16 files. That's it.
 
 agent.zig — core loop (250 lines)
 api.zig — multi-provider HTTP (329 lines)
 stream.zig — SSE parser (344 lines)
 json.zig — hand-rolled JSON (500 lines)
-tools.zig — 6 tools (534 lines)
+tools_coding.zig — 7 tools (280 lines)
 context.zig — token management (225 lines)
 
 You can read the entire codebase in an hour.

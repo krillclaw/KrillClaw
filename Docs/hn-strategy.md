@@ -2,9 +2,9 @@
 
 ## Title Options
 
-### 1. "Show HN: YoctoClaw – A full coding agent in 3,317 lines of Zig (180KB binary)"
-**Reasoning:** Combines Show HN format with the two most compelling numbers. "Full coding agent" sets expectations. "3,317 lines" invites verification. "180KB" is the hook.
-**Risk:** Slightly long, but within HN title limits (80 chars). ✅ 72 chars.
+### 1. "Show HN: YoctoClaw – A full coding agent in ~3,500 lines of Zig (180KB binary)"
+**Reasoning:** Combines Show HN format with the two most compelling numbers. "Full coding agent" sets expectations. "~3,500 lines" invites verification. "180KB" is the hook.
+**Risk:** Slightly long, but within HN title limits (80 chars). ✅ 74 chars.
 **Rating: ★★★★★** — Best all-around option.
 
 ### 2. "Show HN: A coding agent smaller than a JPEG, written in Zig"
@@ -50,8 +50,9 @@ Hi HN, I built YoctoClaw because I wanted to understand what a coding agent actu
 The answer: it's surprisingly simple. Call LLM, parse response, execute tools, loop. The complexity in existing agents (Claude Code ~100K LOC, Aider ~30K LOC) comes from platform features, not the agent loop.
 
 YoctoClaw strips it down to the essentials:
-- 13 Zig source files, 3,317 lines total
-- 6 tools: bash, read_file, write_file, edit_file, search, list_files
+- 16 Zig source files, ~3,500 lines total (including tests)
+- Coding profile: 7 tools (bash, read/write/edit files, search, list_files, apply_patch)
+- IoT/Robotics profiles: swappable tool sets for MQTT/HTTP and robot control
 - 3 providers: Claude, OpenAI, Ollama (local)
 - SSE streaming, context window management, stuck-loop detection
 - 180KB binary, ~2MB RAM, zero dependencies
@@ -64,7 +65,7 @@ Architecture walkthrough in the README. Happy to answer questions about any desi
 ### Anticipated Questions & Responses
 
 **"It's just a toy / It can't do real work"**
-> Fair question. YoctoClaw has the same 6 core tools as Claude Code (bash, read/write/edit file, search, list). The agent loop is functionally identical — call LLM, execute tools, loop until done. What it doesn't have: IDE integration, MCP, multi-file diffs, approval workflows. It's a CLI coding agent, not an IDE.
+> Fair question. YoctoClaw's coding profile has 7 core tools including bash, read/write/edit files, search, list_files, and apply_patch. The agent loop is functionally identical to Claude Code — call LLM, execute tools, loop until done. What it doesn't have: IDE integration, MCP, multi-file diffs, approval workflows. It's a CLI coding agent, not an IDE.
 
 **"Why not just use Claude Code?"**
 > If Claude Code works for you, use it. YoctoClaw exists for three cases: (1) embedded/IoT targets where 50MB won't fit, (2) environments where you want zero dependencies, (3) people who want to understand how coding agents work by reading 3,317 lines instead of 100K.
@@ -79,7 +80,7 @@ Architecture walkthrough in the README. Happy to answer questions about any desi
 > The BLE transport protocol and GATT service UUIDs are implemented. Desktop simulation works via Unix sockets. Real hardware integration requires the platform BLE SDK (e.g., Nordic SoftDevice). The README is transparent about this — see the "Note on BLE/embedded" section.
 
 **"How is this different from ZeroClaw / PicoClaw?"**
-> ZeroClaw (Rust): 3.4MB, ~3K LOC — excellent but 19x larger binary. YoctoClaw Go: 8MB, ~4K LOC, 50 deps — simpler but bigger. YoctoClaw Zig is the minimum: 180KB, 0 deps. Different tools for different needs.
+> ZeroClaw (Rust): 3.4MB, ~3K LOC — excellent but 19x larger binary. YoctoClaw Go: 8MB, ~4K LOC, 50 deps — simpler but bigger. YoctoClaw Zig is the minimum: 180KB, ~3.5K LOC, 0 deps. Different tools for different needs.
 
 ### Engagement Strategy
 
