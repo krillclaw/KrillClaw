@@ -74,14 +74,14 @@ pub fn execute(allocator: std.mem.Allocator, tool: types.ToolUse) ToolResult {
         const payload = json.extractString(tool.input_raw, "payload") orelse
             return .{ .output = "Missing 'payload' parameter", .is_error = true };
         // Build JSON safely with proper escaping
-        var buf = std.ArrayList(u8).init(allocator);
+        var buf: std.ArrayList(u8) = .{};
         const w = buf.writer();
         w.writeAll("{\"action\":\"mqtt_publish\",\"topic\":\"") catch return .{ .output = "JSON build error", .is_error = true };
         json.writeEscaped(w, topic) catch return .{ .output = "JSON build error", .is_error = true };
         w.writeAll("\",\"payload\":\"") catch return .{ .output = "JSON build error", .is_error = true };
         json.writeEscaped(w, payload) catch return .{ .output = "JSON build error", .is_error = true };
         w.writeAll("\"}") catch return .{ .output = "JSON build error", .is_error = true };
-        const bridge_json = buf.toOwnedSlice() catch return .{ .output = "JSON build error", .is_error = true };
+        const bridge_json = buf.toOwnedSlice(allocator) catch return .{ .output = "JSON build error", .is_error = true };
         return bridgeCall(allocator, bridge_json);
     }
 
@@ -90,12 +90,12 @@ pub fn execute(allocator: std.mem.Allocator, tool: types.ToolUse) ToolResult {
             return .{ .output = "Missing 'topic' parameter", .is_error = true };
         const timeout = json.extractInt(tool.input_raw, "timeout_ms") orelse 5000;
         // Build JSON safely with proper escaping
-        var buf = std.ArrayList(u8).init(allocator);
+        var buf: std.ArrayList(u8) = .{};
         const w = buf.writer();
         w.writeAll("{\"action\":\"mqtt_subscribe\",\"topic\":\"") catch return .{ .output = "JSON build error", .is_error = true };
         json.writeEscaped(w, topic) catch return .{ .output = "JSON build error", .is_error = true };
         w.print("\",\"timeout_ms\":{d}}}", .{timeout}) catch return .{ .output = "JSON build error", .is_error = true };
-        const bridge_json = buf.toOwnedSlice() catch return .{ .output = "JSON build error", .is_error = true };
+        const bridge_json = buf.toOwnedSlice(allocator) catch return .{ .output = "JSON build error", .is_error = true };
         return bridgeCall(allocator, bridge_json);
     }
 
@@ -106,7 +106,7 @@ pub fn execute(allocator: std.mem.Allocator, tool: types.ToolUse) ToolResult {
             return .{ .output = "Missing 'url' parameter", .is_error = true };
         const body = json.extractString(tool.input_raw, "body") orelse "";
         // Build JSON safely with proper escaping
-        var buf = std.ArrayList(u8).init(allocator);
+        var buf: std.ArrayList(u8) = .{};
         const w = buf.writer();
         w.writeAll("{\"action\":\"http_request\",\"method\":\"") catch return .{ .output = "JSON build error", .is_error = true };
         json.writeEscaped(w, method) catch return .{ .output = "JSON build error", .is_error = true };
@@ -115,7 +115,7 @@ pub fn execute(allocator: std.mem.Allocator, tool: types.ToolUse) ToolResult {
         w.writeAll("\",\"body\":\"") catch return .{ .output = "JSON build error", .is_error = true };
         json.writeEscaped(w, body) catch return .{ .output = "JSON build error", .is_error = true };
         w.writeAll("\"}") catch return .{ .output = "JSON build error", .is_error = true };
-        const bridge_json = buf.toOwnedSlice() catch return .{ .output = "JSON build error", .is_error = true };
+        const bridge_json = buf.toOwnedSlice(allocator) catch return .{ .output = "JSON build error", .is_error = true };
         return bridgeCall(allocator, bridge_json);
     }
 
@@ -171,7 +171,7 @@ fn executeKvSet(allocator: std.mem.Allocator, input: []const u8) ToolResult {
 
 /// Device info — pure Zig, no bridge needed
 fn executeDeviceInfo(allocator: std.mem.Allocator) ToolResult {
-    var info = std.ArrayList(u8).init(allocator);
+    var info: std.ArrayList(u8) = .{};
     const w = info.writer();
 
     // Hostname
@@ -214,7 +214,7 @@ fn executeDeviceInfo(allocator: std.mem.Allocator) ToolResult {
     } else |_| {}
 
     w.writeAll("\"}") catch {};
-    return .{ .output = info.toOwnedSlice() catch "{\"error\":\"build failed\"}", .is_error = false };
+    return .{ .output = info.toOwnedSlice(allocator) catch "{\"error\":\"build failed\"}", .is_error = false };
 }
 
 /// Send structured JSON to the Python bridge via CLI argument, read response from stdout.

@@ -12,8 +12,8 @@ pub fn buildClaudeRequest(
     config: types.Config,
     messages: []const types.Message,
 ) ![]const u8 {
-    var buf = std.ArrayList(u8).init(allocator);
-    const w = buf.writer();
+    var buf: std.ArrayList(u8) = .{};
+    const w = buf.writer(allocator);
 
     try w.writeAll("{\"model\":\"");
     try writeEscaped(w, config.model);
@@ -83,7 +83,7 @@ pub fn buildClaudeRequest(
     }
 
     try w.writeAll("]}");
-    return buf.toOwnedSlice();
+    return buf.toOwnedSlice(allocator);
 }
 
 /// Build an OpenAI-compatible request body (works for OpenAI + Ollama).
@@ -92,8 +92,8 @@ pub fn buildOpenAiRequest(
     config: types.Config,
     messages: []const types.Message,
 ) ![]const u8 {
-    var buf = std.ArrayList(u8).init(allocator);
-    const w = buf.writer();
+    var buf: std.ArrayList(u8) = .{};
+    const w = buf.writer(allocator);
 
     try w.writeAll("{\"model\":\"");
     try writeEscaped(w, config.model);
@@ -201,7 +201,7 @@ pub fn buildOpenAiRequest(
     }
 
     try w.writeAll("]}");
-    return buf.toOwnedSlice();
+    return buf.toOwnedSlice(allocator);
 }
 
 // ============================================================
@@ -271,29 +271,29 @@ pub fn extractArray(json: []const u8, key: []const u8) ?[]const u8 {
 
 /// Unescape JSON string escape sequences.
 pub fn unescape(allocator: std.mem.Allocator, s: []const u8) ![]const u8 {
-    var out = std.ArrayList(u8).init(allocator);
+    var out: std.ArrayList(u8) = .{};
     var i: usize = 0;
     while (i < s.len) {
         if (s[i] == '\\' and i + 1 < s.len) {
             switch (s[i + 1]) {
-                'n' => try out.append('\n'),
-                'r' => try out.append('\r'),
-                't' => try out.append('\t'),
-                '\\' => try out.append('\\'),
-                '"' => try out.append('"'),
-                '/' => try out.append('/'),
+                'n' => try out.append(allocator, '\n'),
+                'r' => try out.append(allocator, '\r'),
+                't' => try out.append(allocator, '\t'),
+                '\\' => try out.append(allocator, '\\'),
+                '"' => try out.append(allocator, '"'),
+                '/' => try out.append(allocator, '/'),
                 else => {
-                    try out.append(s[i]);
-                    try out.append(s[i + 1]);
+                    try out.append(allocator, s[i]);
+                    try out.append(allocator, s[i + 1]);
                 },
             }
             i += 2;
         } else {
-            try out.append(s[i]);
+            try out.append(allocator, s[i]);
             i += 1;
         }
     }
-    return out.toOwnedSlice();
+    return out.toOwnedSlice(allocator);
 }
 
 // ============================================================

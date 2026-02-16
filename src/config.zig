@@ -50,7 +50,7 @@ pub fn applyCli(config: *types.Config, allocator: std.mem.Allocator) !?[]const u
 
     while (args.next()) |arg| {
         if (std.mem.eql(u8, arg, "--version") or std.mem.eql(u8, arg, "-v")) {
-            const stdout = std.io.getStdOut().writer();
+            const stdout = std.fs.File.stdout().deprecatedWriter();
             try stdout.print("yoctoclaw 0.1.0\n", .{});
             std.process.exit(0);
         } else if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
@@ -148,7 +148,7 @@ fn getEnv(allocator: std.mem.Allocator, name: []const u8) ?[]const u8 {
 }
 
 pub fn printHelp() void {
-    const stdout = std.io.getStdOut().writer();
+    const stdout = std.fs.File.stdout().deprecatedWriter();
     stdout.print(
         \\
         \\YoctoClaw — the world's smallest coding agent

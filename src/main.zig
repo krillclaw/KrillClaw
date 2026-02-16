@@ -18,8 +18,8 @@ pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
-    const stdout = std.io.getStdOut().writer();
-    const stdin = std.io.getStdIn().reader();
+    const stdout = std.fs.File.stdout().deprecatedWriter();
+    const stdin = std.fs.File.stdin().deprecatedReader();
 
     // Load config: file → env → CLI
     var config = try config_mod.load(allocator);

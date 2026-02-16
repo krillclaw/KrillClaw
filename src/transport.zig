@@ -79,7 +79,7 @@ pub const RpcRequest = struct {
 /// Build an RPC message for an API call.
 /// Provider name is escaped; body is raw JSON (passed through as-is).
 pub fn buildApiRpc(allocator: std.mem.Allocator, provider: []const u8, body: []const u8) ![]const u8 {
-    var buf = std.ArrayList(u8).init(allocator);
+    var buf: std.ArrayList(u8) = .{};
     const w = buf.writer();
     try w.writeAll("{\"type\":\"api\",\"provider\":\"");
     // Provider is a controlled enum string (claude/openai/ollama) but we
@@ -90,13 +90,13 @@ pub fn buildApiRpc(allocator: std.mem.Allocator, provider: []const u8, body: []c
     try w.writeAll("\",\"body\":");
     try w.writeAll(body); // body is already valid JSON
     try w.writeByte('}');
-    return buf.toOwnedSlice();
+    return buf.toOwnedSlice(allocator);
 }
 
 /// Build an RPC message for a tool call.
 /// Tool name is escaped; input is raw JSON (passed through as-is).
 pub fn buildToolRpc(allocator: std.mem.Allocator, name: []const u8, input: []const u8) ![]const u8 {
-    var buf = std.ArrayList(u8).init(allocator);
+    var buf: std.ArrayList(u8) = .{};
     const w = buf.writer();
     try w.writeAll("{\"type\":\"tool\",\"name\":\"");
     for (name) |c| {
@@ -105,7 +105,7 @@ pub fn buildToolRpc(allocator: std.mem.Allocator, name: []const u8, input: []con
     try w.writeAll("\",\"input\":");
     try w.writeAll(input); // input is already valid JSON
     try w.writeByte('}');
-    return buf.toOwnedSlice();
+    return buf.toOwnedSlice(allocator);
 }
 
 /// Chunk a message for BLE transport.

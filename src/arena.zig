@@ -42,14 +42,15 @@ pub fn FixedArena(comptime size: usize) type {
                 .vtable = &.{
                     .alloc = alloc,
                     .resize = resize,
+                    .remap = remap,
                     .free = free,
                 },
             };
         }
 
-        fn alloc(ctx: *anyopaque, len: usize, ptr_align: u8, _: usize) ?[*]u8 {
+        fn alloc(ctx: *anyopaque, len: usize, ptr_align: std.mem.Alignment, _: usize) ?[*]u8 {
             const self: *Self = @ptrCast(@alignCast(ctx));
-            const alignment = @as(usize, 1) << @intCast(ptr_align);
+            const alignment = ptr_align.toByteUnits();
             const aligned_offset = std.mem.alignForward(usize, self.offset, alignment);
 
             // Check for overflow: ensure len doesn't overflow when added to aligned_offset
@@ -62,12 +63,16 @@ pub fn FixedArena(comptime size: usize) type {
             return result.ptr;
         }
 
-        fn resize(_: *anyopaque, _: []u8, _: u8, _: usize, _: usize) bool {
+        fn resize(_: *anyopaque, _: []u8, _: std.mem.Alignment, _: usize, _: usize) bool {
             // Arena doesn't support resize
             return false;
         }
 
-        fn free(_: *anyopaque, _: []u8, _: u8, _: usize) void {
+        fn remap(_: *anyopaque, _: []u8, _: std.mem.Alignment, _: usize, _: usize) ?[*]u8 {
+            return null;
+        }
+
+        fn free(_: *anyopaque, _: []u8, _: std.mem.Alignment, _: usize) void {
             // Arena doesn't free individual allocations
         }
 

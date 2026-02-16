@@ -20,13 +20,21 @@ pub fn build(b: *std.Build) void {
     options.addOption(Profile, "profile", profile);
     options.addOption(bool, "sandbox", sandbox);
 
-    const exe = b.addExecutable(.{
-        .name = "yoctoclaw",
+    const mod = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),
         .target = target,
         .optimize = optimize,
     });
-    exe.root_module.addOptions("build_options", options);
+    mod.addOptions("build_options", options);
+
+    const exe = b.addExecutable(.{
+        .name = "yoctoclaw",
+        .root_module = mod,
+    });
+
+    // Size optimization: strip debug info and frame pointers
+    exe.root_module.strip = true;
+    exe.root_module.omit_frame_pointer = true;
 
     b.installArtifact(exe);
 
@@ -40,12 +48,16 @@ pub fn build(b: *std.Build) void {
     run_step.dependOn(&run_cmd.step);
 
     // Test step
-    const tests = b.addTest(.{
+    const test_mod = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),
         .target = target,
         .optimize = optimize,
     });
-    tests.root_module.addOptions("build_options", options);
+    test_mod.addOptions("build_options", options);
+
+    const tests = b.addTest(.{
+        .root_module = test_mod,
+    });
 
     const test_step = b.step("test", "Run tests");
     test_step.dependOn(&b.addRunArtifact(tests).step);

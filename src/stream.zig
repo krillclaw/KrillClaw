@@ -29,18 +29,18 @@ pub const StreamParser = struct {
     pub fn init(allocator: std.mem.Allocator) StreamParser {
         return .{
             .allocator = allocator,
-            .line_buf = std.ArrayList(u8).init(allocator),
-            .content_blocks = std.ArrayList(types.ContentBlock).init(allocator),
-            .current_text = std.ArrayList(u8).init(allocator),
-            .current_tool_input = std.ArrayList(u8).init(allocator),
+            .line_buf = .{},
+            .content_blocks = .{},
+            .current_text = .{},
+            .current_tool_input = .{},
         };
     }
 
     pub fn deinit(self: *StreamParser) void {
-        self.line_buf.deinit();
-        self.content_blocks.deinit();
-        self.current_text.deinit();
-        self.current_tool_input.deinit();
+        self.line_buf.deinit(self.allocator);
+        self.content_blocks.deinit(self.allocator);
+        self.current_text.deinit(self.allocator);
+        self.current_tool_input.deinit(self.allocator);
     }
 
     /// Feed raw bytes from the HTTP response. Calls on_text for each text delta.
@@ -71,7 +71,7 @@ pub const StreamParser = struct {
 
                 self.line_buf.clearRetainingCapacity();
             } else if (byte != '\r') {
-                try self.line_buf.append(byte);
+                try self.line_buf.append(self.allocator, byte);
             }
         }
         return false;
@@ -122,12 +122,12 @@ pub const StreamParser = struct {
             if (self.in_tool_use) {
                 // Accumulate tool input JSON
                 if (json.extractString(data, "partial_json")) |partial| {
-                    try self.current_tool_input.appendSlice(partial);
+                    try self.current_tool_input.appendSlice(self.allocator, partial);
                 }
             } else {
                 // Text delta
                 if (json.extractString(data, "text")) |text| {
-                    try self.current_text.appendSlice(text);
+                    try self.current_text.appendSlice(self.allocator, text);
                     if (on_text) |callback| {
                         callback(text);
                     }
@@ -164,7 +164,7 @@ pub const StreamParser = struct {
 
     fn flushText(self: *StreamParser) !void {
         if (self.current_text.items.len > 0) {
-            try self.content_blocks.append(.{
+            try self.content_blocks.append(self.allocator, .{
                 .type = .text,
                 .text = try self.allocator.dupe(u8, self.current_text.items),
             });
@@ -180,7 +180,7 @@ pub const StreamParser = struct {
 
         // current_tool_id and current_tool_name are already owned copies
         // (duped in content_block_start handler), so use them directly
-        try self.content_blocks.append(.{
+        try self.content_blocks.append(self.allocator, .{
             .type = .tool_use,
             .tool_use = .{
                 .id = self.current_tool_id orelse "",
@@ -199,7 +199,7 @@ pub const StreamParser = struct {
         return .{
             .id = try self.allocator.dupe(u8, self.response_id orelse ""),
             .stop_reason = self.stop_reason,
-            .content = try self.content_blocks.toOwnedSlice(),
+            .content = try self.content_blocks.toOwnedSlice(self.allocator),
             .input_tokens = self.input_tokens,
             .output_tokens = self.output_tokens,
         };
