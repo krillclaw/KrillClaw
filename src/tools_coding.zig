@@ -6,6 +6,11 @@ const build_options = @import("build_options");
 pub const ToolResult = struct {
     output: []const u8,
     is_error: bool,
+    allocated: bool = false,
+
+    pub fn deinit(self: ToolResult, allocator: std.mem.Allocator) void {
+        if (self.allocated) allocator.free(self.output);
+    }
 };
 
 pub const tool_definitions = [_]types.ToolDef{
@@ -76,9 +81,6 @@ fn isPathAllowed(path: []const u8) bool {
         const parent_canon = std.fs.cwd().realpathAlloc(std.heap.page_allocator, dirname) catch return false;
         defer std.heap.page_allocator.free(parent_canon);
 
-        // Check if parent is allowed
-        if (!isCanonicalPathAllowed(parent_canon)) return false;
-
         // CRITICAL: Reconstruct full path and validate it would be under allowed root
         // This prevents attacks like "allowed_dir/../../../etc/passwd"
         const reconstructed = std.fs.path.join(std.heap.page_allocator, &.{ parent_canon, basename }) catch return false;
@@ -96,11 +98,12 @@ fn isPathAllowed(path: []const u8) bool {
 fn isCanonicalPathAllowed(canonical_path: []const u8) bool {
     if (build_options.sandbox) {
         // Sandbox: only /tmp/yoctoclaw-sandbox
-        return std.mem.startsWith(u8, canonical_path, "/tmp/yoctoclaw-sandbox");
+        return std.mem.startsWith(u8, canonical_path, "/tmp/yoctoclaw-sandbox") or std.mem.startsWith(u8, canonical_path, "/private/tmp/yoctoclaw-sandbox");
     }
 
     // Non-sandbox: allow /tmp/yoctoclaw-* (least privilege) or paths under cwd
     if (std.mem.startsWith(u8, canonical_path, "/tmp/yoctoclaw")) return true;
+    if (std.mem.startsWith(u8, canonical_path, "/private/tmp/yoctoclaw")) return true;
 
     const cwd_real = std.fs.cwd().realpathAlloc(std.heap.page_allocator, ".") catch return false;
     defer std.heap.page_allocator.free(cwd_real);
@@ -124,6 +127,7 @@ fn executeBash(allocator: std.mem.Allocator, input: []const u8) ToolResult {
         return .{ .output = "Missing 'command' parameter", .is_error = true };
     };
     const unescaped_cmd = json.unescape(allocator, command) catch command;
+    defer if (unescaped_cmd.ptr != command.ptr) allocator.free(unescaped_cmd);
 
     // In sandbox mode, run inside a restricted environment
     const shell_cmd = if (build_options.sandbox) blk: {
@@ -142,7 +146,7 @@ fn executeBash(allocator: std.mem.Allocator, input: []const u8) ToolResult {
         .max_output_bytes = 1024 * 256,
     }) catch |err| {
         const msg = std.fmt.allocPrint(allocator, "Failed to execute: {}", .{err}) catch "exec error";
-        return .{ .output = msg, .is_error = true };
+        return .{ .output = msg, .is_error = true, .allocated = true };
     };
     const is_err = switch (result.term) {
         .Exited => |code| code != 0,
@@ -150,12 +154,18 @@ fn executeBash(allocator: std.mem.Allocator, input: []const u8) ToolResult {
     };
     if (result.stderr.len > 0 and result.stdout.len > 0) {
         const combined = std.fmt.allocPrint(allocator, "{s}\n--- stderr ---\n{s}", .{ result.stdout, result.stderr }) catch result.stdout;
-        return .{ .output = combined, .is_error = is_err };
+        allocator.free(result.stdout);
+        allocator.free(result.stderr);
+        return .{ .output = combined, .is_error = is_err, .allocated = true };
     } else if (result.stderr.len > 0) {
-        return .{ .output = result.stderr, .is_error = is_err };
+        allocator.free(result.stdout);
+        return .{ .output = result.stderr, .is_error = is_err, .allocated = true };
     } else if (result.stdout.len > 0) {
-        return .{ .output = result.stdout, .is_error = is_err };
+        allocator.free(result.stderr);
+        return .{ .output = result.stdout, .is_error = is_err, .allocated = true };
     }
+    allocator.free(result.stdout);
+    allocator.free(result.stderr);
     return .{ .output = "(no output)", .is_error = is_err };
 }
 
@@ -181,14 +191,14 @@ fn executeReadFile(allocator: std.mem.Allocator, input: []const u8) ToolResult {
     if (!isPathAllowed(path)) return .{ .output = "Path not allowed", .is_error = true };
     const file = std.fs.cwd().openFile(path, .{}) catch |err| {
         const msg = std.fmt.allocPrint(allocator, "Cannot open '{s}': {}", .{ path, err }) catch "open error";
-        return .{ .output = msg, .is_error = true };
+        return .{ .output = msg, .is_error = true, .allocated = true };
     };
     defer file.close();
     const content = file.readToEndAlloc(allocator, 1024 * 64) catch |err| {
         const msg = std.fmt.allocPrint(allocator, "Cannot read: {}", .{err}) catch "read error";
-        return .{ .output = msg, .is_error = true };
+        return .{ .output = msg, .is_error = true, .allocated = true };
     };
-    return .{ .output = if (content.len == 0) "(empty file)" else content, .is_error = false };
+    return .{ .output = if (content.len == 0) "(empty file)" else content, .is_error = false, .allocated = true };
 }
 
 fn executeWriteFile(allocator: std.mem.Allocator, input: []const u8) ToolResult {
@@ -204,16 +214,17 @@ fn executeWriteFile(allocator: std.mem.Allocator, input: []const u8) ToolResult 
     }
     const file = std.fs.cwd().createFile(path, .{}) catch |err| {
         const msg = std.fmt.allocPrint(allocator, "Cannot create '{s}': {}", .{ path, err }) catch "create error";
-        return .{ .output = msg, .is_error = true };
+        return .{ .output = msg, .is_error = true, .allocated = true };
     };
     defer file.close();
     const unescaped = json.unescape(allocator, content) catch content;
+    defer if (unescaped.ptr != content.ptr) allocator.free(unescaped);
     file.writeAll(unescaped) catch |err| {
         const msg = std.fmt.allocPrint(allocator, "Write failed: {}", .{err}) catch "write error";
-        return .{ .output = msg, .is_error = true };
+        return .{ .output = msg, .is_error = true, .allocated = true };
     };
     const msg = std.fmt.allocPrint(allocator, "Wrote {d} bytes to {s}", .{ unescaped.len, path }) catch "wrote file";
-    return .{ .output = msg, .is_error = false };
+    return .{ .output = msg, .is_error = false, .allocated = true };
 }
 
 fn executeEditFile(allocator: std.mem.Allocator, input: []const u8) ToolResult {
@@ -228,18 +239,21 @@ fn executeEditFile(allocator: std.mem.Allocator, input: []const u8) ToolResult {
         return .{ .output = "Missing 'new_string' parameter", .is_error = true };
     };
     const old_string = json.unescape(allocator, old_string_raw) catch old_string_raw;
+    defer if (old_string.ptr != old_string_raw.ptr) allocator.free(old_string);
     const new_string = json.unescape(allocator, new_string_raw) catch new_string_raw;
+    defer if (new_string.ptr != new_string_raw.ptr) allocator.free(new_string);
     const file_content = blk: {
         const f = std.fs.cwd().openFile(path, .{}) catch |err| {
             const msg = std.fmt.allocPrint(allocator, "Cannot open '{s}': {}", .{ path, err }) catch "open error";
-            return .{ .output = msg, .is_error = true };
+            return .{ .output = msg, .is_error = true, .allocated = true };
         };
         defer f.close();
         break :blk f.readToEndAlloc(allocator, 1024 * 1024) catch |err| {
             const msg = std.fmt.allocPrint(allocator, "Cannot read: {}", .{err}) catch "read error";
-            return .{ .output = msg, .is_error = true };
+            return .{ .output = msg, .is_error = true, .allocated = true };
         };
     };
+    defer allocator.free(file_content);
     var count: usize = 0;
     var search_pos: usize = 0;
     while (std.mem.indexOf(u8, file_content[search_pos..], old_string)) |idx| {
@@ -249,25 +263,26 @@ fn executeEditFile(allocator: std.mem.Allocator, input: []const u8) ToolResult {
     if (count == 0) return .{ .output = "old_string not found in file", .is_error = true };
     if (count > 1) {
         const msg = std.fmt.allocPrint(allocator, "old_string found {d} times (must be unique)", .{count}) catch "multiple matches";
-        return .{ .output = msg, .is_error = true };
+        return .{ .output = msg, .is_error = true, .allocated = true };
     }
     const idx = std.mem.indexOf(u8, file_content, old_string).?;
     const new_content = std.fmt.allocPrint(allocator, "{s}{s}{s}", .{
         file_content[0..idx], new_string, file_content[idx + old_string.len ..],
     }) catch return .{ .output = "Failed to build replacement", .is_error = true };
+    defer allocator.free(new_content);
     const file = std.fs.cwd().createFile(path, .{}) catch |err| {
         const msg = std.fmt.allocPrint(allocator, "Cannot write '{s}': {}", .{ path, err }) catch "write error";
-        return .{ .output = msg, .is_error = true };
+        return .{ .output = msg, .is_error = true, .allocated = true };
     };
     defer file.close();
     file.writeAll(new_content) catch |err| {
         const msg = std.fmt.allocPrint(allocator, "Write failed: {}", .{err}) catch "write error";
-        return .{ .output = msg, .is_error = true };
+        return .{ .output = msg, .is_error = true, .allocated = true };
     };
     const msg = std.fmt.allocPrint(allocator, "Edited {s} ({d} bytes changed)", .{
         path, @as(i64, @intCast(new_string.len)) - @as(i64, @intCast(old_string.len)),
     }) catch "edited file";
-    return .{ .output = msg, .is_error = false };
+    return .{ .output = msg, .is_error = false, .allocated = true };
 }
 
 fn executeSearch(allocator: std.mem.Allocator, input: []const u8) ToolResult {
@@ -280,16 +295,17 @@ fn executeSearch(allocator: std.mem.Allocator, input: []const u8) ToolResult {
         return .{ .output = "Search path not allowed", .is_error = true };
     }
     const unescaped_pattern = json.unescape(allocator, pattern) catch pattern;
+    defer if (unescaped_pattern.ptr != pattern.ptr) allocator.free(unescaped_pattern);
     var results: std.ArrayList(u8) = .{};
     var match_count: usize = 0;
     const max_matches: usize = 100;
     const stat = std.fs.cwd().statFile(search_path) catch {
         searchDir(allocator, search_path, unescaped_pattern, &results, &match_count, max_matches, 0) catch |err| {
             const msg = std.fmt.allocPrint(allocator, "Search failed: {}", .{err}) catch "search error";
-            return .{ .output = msg, .is_error = true };
+            return .{ .output = msg, .is_error = true, .allocated = true };
         };
         if (results.items.len == 0) return .{ .output = "No matches found", .is_error = false };
-        return .{ .output = results.toOwnedSlice(allocator) catch "No matches found", .is_error = false };
+        return .{ .output = results.toOwnedSlice(allocator) catch "No matches found", .is_error = false, .allocated = true };
     };
     if (stat.kind == .file) {
         searchFile(allocator, search_path, unescaped_pattern, &results, &match_count, max_matches) catch {};
@@ -297,7 +313,7 @@ fn executeSearch(allocator: std.mem.Allocator, input: []const u8) ToolResult {
         searchDir(allocator, search_path, unescaped_pattern, &results, &match_count, max_matches, 0) catch {};
     }
     if (results.items.len == 0) return .{ .output = "No matches found", .is_error = false };
-    return .{ .output = results.toOwnedSlice(allocator) catch "No matches found", .is_error = false };
+    return .{ .output = results.toOwnedSlice(allocator) catch "No matches found", .is_error = false, .allocated = true };
 }
 
 fn searchDir(allocator: std.mem.Allocator, dir_path: []const u8, pattern: []const u8, results: *std.ArrayList(u8), match_count: *usize, max_matches: usize, depth: usize) !void {
@@ -353,15 +369,16 @@ fn executeListFiles(allocator: std.mem.Allocator, input: []const u8) ToolResult 
     }
     const pattern = json.extractString(input, "pattern");
     const unescaped_pattern = if (pattern) |p| json.unescape(allocator, p) catch p else null;
+    defer if (unescaped_pattern) |up| { if (pattern) |p| { if (up.ptr != p.ptr) allocator.free(up); } };
     var results: std.ArrayList(u8) = .{};
     var file_count: usize = 0;
     const max_files: usize = 200;
     listDir(allocator, dir_path, unescaped_pattern, &results, &file_count, max_files, 0) catch |err| {
         const msg = std.fmt.allocPrint(allocator, "List failed: {}", .{err}) catch "list error";
-        return .{ .output = msg, .is_error = true };
+        return .{ .output = msg, .is_error = true, .allocated = true };
     };
     if (results.items.len == 0) return .{ .output = "(no files found)", .is_error = false };
-    return .{ .output = results.toOwnedSlice(allocator) catch "(no files found)", .is_error = false };
+    return .{ .output = results.toOwnedSlice(allocator) catch "(no files found)", .is_error = false, .allocated = true };
 }
 
 fn listDir(allocator: std.mem.Allocator, dir_path: []const u8, pattern: ?[]const u8, results: *std.ArrayList(u8), file_count: *usize, max_files: usize, depth: usize) !void {
@@ -436,12 +453,12 @@ fn executeApplyPatch(allocator: std.mem.Allocator, input: []const u8) ToolResult
         .max_output_bytes = 1024 * 64,
     }) catch |err| {
         const msg = std.fmt.allocPrint(allocator, "Patch failed: {}", .{err}) catch "patch error";
-        return .{ .output = msg, .is_error = true };
+        return .{ .output = msg, .is_error = true, .allocated = true };
     };
     const is_err = switch (result.term) {
         .Exited => |code| code != 0,
         else => true,
     };
     const output = if (result.stdout.len > 0) result.stdout else if (result.stderr.len > 0) result.stderr else "Patch applied";
-    return .{ .output = output, .is_error = is_err };
+    return .{ .output = output, .is_error = is_err, .allocated = true };
 }

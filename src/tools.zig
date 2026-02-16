@@ -30,6 +30,7 @@ test "execute unknown tool" {
     if (build_options.profile != .coding) return;
     const alloc = std.testing.allocator;
     const result = execute(alloc, .{ .id = "t1", .name = "nonexistent", .input_raw = "{}" });
+    defer result.deinit(alloc);
     try std.testing.expect(result.is_error);
     try std.testing.expectEqualStrings("Unknown tool", result.output);
 }
@@ -42,6 +43,7 @@ test "bash echo" {
         .name = "bash",
         .input_raw = "{\"command\":\"echo hello\"}",
     });
+    defer result.deinit(alloc);
     try std.testing.expect(!result.is_error);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "hello") != null);
 }
@@ -54,6 +56,7 @@ test "bash exit code" {
         .name = "bash",
         .input_raw = "{\"command\":\"false\"}",
     });
+    defer result.deinit(alloc);
     try std.testing.expect(result.is_error);
 }
 
@@ -70,6 +73,7 @@ test "read_file" {
     const input = std.fmt.allocPrint(alloc, "{{\"path\":\"{s}\"}}", .{tmp_path}) catch unreachable;
     defer alloc.free(input);
     const result = execute(alloc, .{ .id = "t1", .name = "read_file", .input_raw = input });
+    defer result.deinit(alloc);
     try std.testing.expect(!result.is_error);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "test content 123") != null);
 }
@@ -82,6 +86,7 @@ test "write_file" {
     const input = std.fmt.allocPrint(alloc, "{{\"path\":\"{s}\",\"content\":\"written data\"}}", .{tmp_path}) catch unreachable;
     defer alloc.free(input);
     const result = execute(alloc, .{ .id = "t1", .name = "write_file", .input_raw = input });
+    defer result.deinit(alloc);
     try std.testing.expect(!result.is_error);
     const f = try std.fs.cwd().openFile(tmp_path, .{});
     defer f.close();
@@ -103,6 +108,7 @@ test "edit_file unique match" {
     const input = std.fmt.allocPrint(alloc, "{{\"path\":\"{s}\",\"old_string\":\"hello\",\"new_string\":\"goodbye\"}}", .{tmp_path}) catch unreachable;
     defer alloc.free(input);
     const result = execute(alloc, .{ .id = "t1", .name = "edit_file", .input_raw = input });
+    defer result.deinit(alloc);
     try std.testing.expect(!result.is_error);
     const f = try std.fs.cwd().openFile(tmp_path, .{});
     defer f.close();
@@ -124,6 +130,7 @@ test "edit_file no match" {
     const input = std.fmt.allocPrint(alloc, "{{\"path\":\"{s}\",\"old_string\":\"NOTFOUND\",\"new_string\":\"x\"}}", .{tmp_path}) catch unreachable;
     defer alloc.free(input);
     const result = execute(alloc, .{ .id = "t1", .name = "edit_file", .input_raw = input });
+    defer result.deinit(alloc);
     try std.testing.expect(result.is_error);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "not found") != null);
 }
@@ -141,6 +148,7 @@ test "edit_file multiple matches" {
     const input = std.fmt.allocPrint(alloc, "{{\"path\":\"{s}\",\"old_string\":\"foo\",\"new_string\":\"baz\"}}", .{tmp_path}) catch unreachable;
     defer alloc.free(input);
     const result = execute(alloc, .{ .id = "t1", .name = "edit_file", .input_raw = input });
+    defer result.deinit(alloc);
     try std.testing.expect(result.is_error);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "must be unique") != null);
 }
@@ -151,8 +159,9 @@ test "search no injection" {
     const result = execute(alloc, .{
         .id = "t1",
         .name = "search",
-        .input_raw = "{\"pattern\":\"'; rm -rf /\",\"path\":\"/tmp\"}",
+        .input_raw = "{\"pattern\":\"'; rm -rf /\",\"path\":\"/tmp/yoctoclaw-test-search\"}",
     });
+    defer result.deinit(alloc);
     try std.testing.expect(!result.is_error or
         std.mem.indexOf(u8, result.output, "No matches") != null or
         std.mem.indexOf(u8, result.output, "Search failed") != null);
@@ -164,8 +173,9 @@ test "list_files no injection" {
     const result = execute(alloc, .{
         .id = "t1",
         .name = "list_files",
-        .input_raw = "{\"path\":\"/tmp\",\"pattern\":\"'; rm -rf /\"}",
+        .input_raw = "{\"path\":\"/tmp/yoctoclaw-test-list\",\"pattern\":\"'; rm -rf /\"}",
     });
+    defer result.deinit(alloc);
     try std.testing.expect(!result.is_error or
         std.mem.indexOf(u8, result.output, "no files") != null);
 }
