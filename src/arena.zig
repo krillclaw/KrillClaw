@@ -52,7 +52,9 @@ pub fn FixedArena(comptime size: usize) type {
             const alignment = @as(usize, 1) << @intCast(ptr_align);
             const aligned_offset = std.mem.alignForward(usize, self.offset, alignment);
 
-            if (aligned_offset + len > size) return null;
+            // Check for overflow: ensure len doesn't overflow when added to aligned_offset
+            // and that the result fits within the buffer size
+            if (len > size or aligned_offset > size - len) return null;
 
             const result = self.buffer[aligned_offset..][0..len];
             self.offset = aligned_offset + len;
@@ -60,12 +62,12 @@ pub fn FixedArena(comptime size: usize) type {
             return result.ptr;
         }
 
-        fn resize(_: *anyopaque, _: [*]u8, _: usize, _: usize, _: u8, _: usize) bool {
+        fn resize(_: *anyopaque, _: []u8, _: u8, _: usize, _: usize) bool {
             // Arena doesn't support resize
             return false;
         }
 
-        fn free(_: *anyopaque, _: [*]u8, _: usize, _: u8, _: usize) void {
+        fn free(_: *anyopaque, _: []u8, _: u8, _: usize) void {
             // Arena doesn't free individual allocations
         }
 

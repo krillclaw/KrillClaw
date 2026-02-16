@@ -61,26 +61,40 @@ pub const tool_definitions = [_]types.ToolDef{
 };
 
 /// Path allowlist: restrict file operations to cwd (stricter in sandbox mode)
+/// Uses canonical path resolution to prevent traversal attacks via .., symlinks, etc.
 fn isPathAllowed(path: []const u8) bool {
-    // Reject path traversal
+    // Quick reject on obvious traversal attempts
     if (std.mem.indexOf(u8, path, "..") != null) return false;
 
-    if (build_options.sandbox) {
-        // Sandbox: only relative paths under cwd, no absolute paths except /tmp/yoctoclaw-sandbox
-        if (path.len > 0 and path[0] == '/') {
-            if (std.mem.startsWith(u8, path, "/tmp/yoctoclaw-sandbox")) return true;
-            return false;
+    // Get canonical path to prevent all traversal attacks (symlinks, .., encodings)
+    const canonical = std.fs.cwd().realpathAlloc(std.heap.page_allocator, path) catch {
+        // If path doesn't exist yet (e.g., write_file), check parent directory
+        if (std.fs.path.dirname(path)) |parent| {
+            const parent_canon = std.fs.cwd().realpathAlloc(std.heap.page_allocator, parent) catch return false;
+            defer std.heap.page_allocator.free(parent_canon);
+            return isCanonicalPathAllowed(parent_canon);
         }
-        return true;
+        return false;
+    };
+    defer std.heap.page_allocator.free(canonical);
+
+    return isCanonicalPathAllowed(canonical);
+}
+
+/// Check if a canonical (resolved) path is allowed
+fn isCanonicalPathAllowed(canonical_path: []const u8) bool {
+    if (build_options.sandbox) {
+        // Sandbox: only /tmp/yoctoclaw-sandbox
+        return std.mem.startsWith(u8, canonical_path, "/tmp/yoctoclaw-sandbox");
     }
 
-    // Non-sandbox: allow absolute paths under cwd or /tmp
-    if (path.len > 0 and path[0] == '/') {
-        if (std.mem.startsWith(u8, path, "/tmp")) return true;
-        const cwd_buf = std.fs.cwd().realpathAlloc(std.heap.page_allocator, ".") catch return false;
-        return std.mem.startsWith(u8, path, cwd_buf);
-    }
-    return true;
+    // Non-sandbox: allow /tmp or paths under cwd
+    if (std.mem.startsWith(u8, canonical_path, "/tmp")) return true;
+
+    const cwd_real = std.fs.cwd().realpathAlloc(std.heap.page_allocator, ".") catch return false;
+    defer std.heap.page_allocator.free(cwd_real);
+
+    return std.mem.startsWith(u8, canonical_path, cwd_real);
 }
 
 pub fn execute(allocator: std.mem.Allocator, tool: types.ToolUse) ToolResult {

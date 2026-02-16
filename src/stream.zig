@@ -52,11 +52,16 @@ pub const StreamParser = struct {
 
                 if (line.len == 0) {
                     // Empty line = end of event, process it
-                    if (self.event_type) |_| {
-                        // Event was already processed in data line
+                    if (self.event_type) |old_event| {
+                        // Event was already processed in data line, free it
+                        self.allocator.free(old_event);
                     }
                     self.event_type = null;
                 } else if (std.mem.startsWith(u8, line, "event: ")) {
+                    // Free previous event_type before allocating new one
+                    if (self.event_type) |old_event| {
+                        self.allocator.free(old_event);
+                    }
                     self.event_type = try self.allocator.dupe(u8, line[7..]);
                 } else if (std.mem.startsWith(u8, line, "data: ")) {
                     const event_data = line[6..];
@@ -76,14 +81,19 @@ pub const StreamParser = struct {
         const event_type = self.event_type orelse return false;
 
         if (std.mem.eql(u8, event_type, "message_start")) {
-            // Extract message ID and usage
-            self.response_id = json.extractString(data, "id");
+            // Extract message ID and usage — dupe since data points into line_buf
+            if (json.extractString(data, "id")) |id_str|
+                self.response_id = try self.allocator.dupe(u8, id_str)
+            else
+                self.response_id = null;
             if (json.extractObject(data, "usage")) |usage| {
                 self.input_tokens = json.extractInt(usage, "input_tokens") orelse 0;
             }
         } else if (std.mem.eql(u8, event_type, "content_block_start")) {
-            const block_type = json.extractString(data, "type");
             self.block_index = json.extractInt(data, "index") orelse self.block_index;
+            // Extract type from nested content_block object to avoid matching top-level "type"
+            const cb_obj = json.extractObject(data, "content_block");
+            const block_type = if (cb_obj) |cb| json.extractString(cb, "type") else json.extractString(data, "type");
 
             if (block_type) |bt| {
                 if (std.mem.eql(u8, bt, "tool_use")) {
@@ -91,13 +101,15 @@ pub const StreamParser = struct {
                     self.in_tool_use = true;
                     // Flush any accumulated text
                     try self.flushText();
+                    // Extract from content_block sub-object if available
+                    const src = cb_obj orelse data;
                     // Immediately dupe these strings — data points into line_buf
                     // which gets cleared on the next line
-                    self.current_tool_id = if (json.extractString(data, "id")) |id|
+                    self.current_tool_id = if (json.extractString(src, "id")) |id|
                         try self.allocator.dupe(u8, id)
                     else
                         null;
-                    self.current_tool_name = if (json.extractString(data, "name")) |name|
+                    self.current_tool_name = if (json.extractString(src, "name")) |name|
                         try self.allocator.dupe(u8, name)
                     else
                         null;
@@ -254,7 +266,9 @@ const tool_use_sse =
     "\n";
 
 test "parse text-only SSE" {
-    const alloc = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
     var parser = StreamParser.init(alloc);
     defer parser.deinit();
 
@@ -262,7 +276,6 @@ test "parse text-only SSE" {
     try std.testing.expect(done);
 
     const resp = try parser.toResponse();
-    defer alloc.free(resp.content);
 
     try std.testing.expectEqual(@as(usize, 1), resp.content.len);
     try std.testing.expectEqual(types.ContentType.text, resp.content[0].type);
@@ -271,7 +284,9 @@ test "parse text-only SSE" {
 }
 
 test "parse tool_use SSE" {
-    const alloc = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
     var parser = StreamParser.init(alloc);
     defer parser.deinit();
 
@@ -279,7 +294,6 @@ test "parse tool_use SSE" {
     try std.testing.expect(done);
 
     const resp = try parser.toResponse();
-    defer alloc.free(resp.content);
 
     try std.testing.expectEqual(@as(usize, 2), resp.content.len);
     // First block: text
@@ -294,20 +308,23 @@ test "parse tool_use SSE" {
 }
 
 test "parse token counts" {
-    const alloc = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
     var parser = StreamParser.init(alloc);
     defer parser.deinit();
 
     _ = try parser.feed(text_only_sse, null);
     const resp = try parser.toResponse();
-    defer alloc.free(resp.content);
 
     try std.testing.expectEqual(@as(u32, 50), resp.input_tokens);
     try std.testing.expectEqual(@as(u32, 25), resp.output_tokens);
 }
 
 test "streaming callback fires" {
-    const alloc = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
     var parser = StreamParser.init(alloc);
     defer parser.deinit();
 
@@ -324,7 +341,9 @@ test "streaming callback fires" {
 }
 
 test "chunked feed" {
-    const alloc = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
     var parser = StreamParser.init(alloc);
     defer parser.deinit();
 
@@ -337,7 +356,6 @@ test "chunked feed" {
     try std.testing.expect(done);
 
     const resp = try parser.toResponse();
-    defer alloc.free(resp.content);
 
     try std.testing.expectEqual(@as(usize, 1), resp.content.len);
     try std.testing.expectEqualStrings("Hello world", resp.content[0].text.?);

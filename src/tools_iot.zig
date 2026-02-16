@@ -73,9 +73,15 @@ pub fn execute(allocator: std.mem.Allocator, tool: types.ToolUse) ToolResult {
             return .{ .output = "Missing 'topic' parameter", .is_error = true };
         const payload = json.extractString(tool.input_raw, "payload") orelse
             return .{ .output = "Missing 'payload' parameter", .is_error = true };
-        const bridge_json = std.fmt.allocPrint(allocator,
-            \\{{"action":"mqtt_publish","topic":"{s}","payload":"{s}"}}
-        , .{ topic, payload }) catch return .{ .output = "JSON build error", .is_error = true };
+        // Build JSON safely with proper escaping
+        var buf = std.ArrayList(u8).init(allocator);
+        const w = buf.writer();
+        w.writeAll("{\"action\":\"mqtt_publish\",\"topic\":\"") catch return .{ .output = "JSON build error", .is_error = true };
+        json.writeEscaped(w, topic) catch return .{ .output = "JSON build error", .is_error = true };
+        w.writeAll("\",\"payload\":\"") catch return .{ .output = "JSON build error", .is_error = true };
+        json.writeEscaped(w, payload) catch return .{ .output = "JSON build error", .is_error = true };
+        w.writeAll("\"}") catch return .{ .output = "JSON build error", .is_error = true };
+        const bridge_json = buf.toOwnedSlice() catch return .{ .output = "JSON build error", .is_error = true };
         return bridgeCall(allocator, bridge_json);
     }
 
@@ -83,9 +89,13 @@ pub fn execute(allocator: std.mem.Allocator, tool: types.ToolUse) ToolResult {
         const topic = json.extractString(tool.input_raw, "topic") orelse
             return .{ .output = "Missing 'topic' parameter", .is_error = true };
         const timeout = json.extractInt(tool.input_raw, "timeout_ms") orelse 5000;
-        const bridge_json = std.fmt.allocPrint(allocator,
-            \\{{"action":"mqtt_subscribe","topic":"{s}","timeout_ms":{d}}}
-        , .{ topic, timeout }) catch return .{ .output = "JSON build error", .is_error = true };
+        // Build JSON safely with proper escaping
+        var buf = std.ArrayList(u8).init(allocator);
+        const w = buf.writer();
+        w.writeAll("{\"action\":\"mqtt_subscribe\",\"topic\":\"") catch return .{ .output = "JSON build error", .is_error = true };
+        json.writeEscaped(w, topic) catch return .{ .output = "JSON build error", .is_error = true };
+        w.print("\",\"timeout_ms\":{d}}}", .{timeout}) catch return .{ .output = "JSON build error", .is_error = true };
+        const bridge_json = buf.toOwnedSlice() catch return .{ .output = "JSON build error", .is_error = true };
         return bridgeCall(allocator, bridge_json);
     }
 
@@ -95,9 +105,17 @@ pub fn execute(allocator: std.mem.Allocator, tool: types.ToolUse) ToolResult {
         const url = json.extractString(tool.input_raw, "url") orelse
             return .{ .output = "Missing 'url' parameter", .is_error = true };
         const body = json.extractString(tool.input_raw, "body") orelse "";
-        const bridge_json = std.fmt.allocPrint(allocator,
-            \\{{"action":"http_request","method":"{s}","url":"{s}","body":"{s}"}}
-        , .{ method, url, body }) catch return .{ .output = "JSON build error", .is_error = true };
+        // Build JSON safely with proper escaping
+        var buf = std.ArrayList(u8).init(allocator);
+        const w = buf.writer();
+        w.writeAll("{\"action\":\"http_request\",\"method\":\"") catch return .{ .output = "JSON build error", .is_error = true };
+        json.writeEscaped(w, method) catch return .{ .output = "JSON build error", .is_error = true };
+        w.writeAll("\",\"url\":\"") catch return .{ .output = "JSON build error", .is_error = true };
+        json.writeEscaped(w, url) catch return .{ .output = "JSON build error", .is_error = true };
+        w.writeAll("\",\"body\":\"") catch return .{ .output = "JSON build error", .is_error = true };
+        json.writeEscaped(w, body) catch return .{ .output = "JSON build error", .is_error = true };
+        w.writeAll("\"}") catch return .{ .output = "JSON build error", .is_error = true };
+        const bridge_json = buf.toOwnedSlice() catch return .{ .output = "JSON build error", .is_error = true };
         return bridgeCall(allocator, bridge_json);
     }
 
