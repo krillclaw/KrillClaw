@@ -68,13 +68,24 @@ fn isPathAllowed(path: []const u8) bool {
 
     // Get canonical path to prevent all traversal attacks (symlinks, .., encodings)
     const canonical = std.fs.cwd().realpathAlloc(std.heap.page_allocator, path) catch {
-        // If path doesn't exist yet (e.g., write_file), check parent directory
-        if (std.fs.path.dirname(path)) |parent| {
-            const parent_canon = std.fs.cwd().realpathAlloc(std.heap.page_allocator, parent) catch return false;
-            defer std.heap.page_allocator.free(parent_canon);
-            return isCanonicalPathAllowed(parent_canon);
-        }
-        return false;
+        // If path doesn't exist yet (e.g., write_file), validate parent + basename
+        const dirname = std.fs.path.dirname(path) orelse ".";
+        const basename = std.fs.path.basename(path);
+
+        // Resolve parent directory
+        const parent_canon = std.fs.cwd().realpathAlloc(std.heap.page_allocator, dirname) catch return false;
+        defer std.heap.page_allocator.free(parent_canon);
+
+        // Check if parent is allowed
+        if (!isCanonicalPathAllowed(parent_canon)) return false;
+
+        // CRITICAL: Reconstruct full path and validate it would be under allowed root
+        // This prevents attacks like "allowed_dir/../../../etc/passwd"
+        const reconstructed = std.fs.path.join(std.heap.page_allocator, &.{ parent_canon, basename }) catch return false;
+        defer std.heap.page_allocator.free(reconstructed);
+
+        // Double-check reconstructed path is under allowed directories
+        return isCanonicalPathAllowed(reconstructed);
     };
     defer std.heap.page_allocator.free(canonical);
 
@@ -264,6 +275,10 @@ fn executeSearch(allocator: std.mem.Allocator, input: []const u8) ToolResult {
         return .{ .output = "Missing 'pattern' parameter", .is_error = true };
     };
     const search_path = json.extractString(input, "path") orelse ".";
+    // SECURITY: Enforce path allowlist to prevent sandbox bypass
+    if (!isPathAllowed(search_path)) {
+        return .{ .output = "Search path not allowed", .is_error = true };
+    }
     const unescaped_pattern = json.unescape(allocator, pattern) catch pattern;
     var results = std.ArrayList(u8).init(allocator);
     var match_count: usize = 0;
@@ -332,6 +347,10 @@ fn searchFile(allocator: std.mem.Allocator, file_path: []const u8, pattern: []co
 
 fn executeListFiles(allocator: std.mem.Allocator, input: []const u8) ToolResult {
     const dir_path = json.extractString(input, "path") orelse ".";
+    // SECURITY: Enforce path allowlist to prevent sandbox bypass
+    if (!isPathAllowed(dir_path)) {
+        return .{ .output = "Directory path not allowed", .is_error = true };
+    }
     const pattern = json.extractString(input, "pattern");
     const unescaped_pattern = if (pattern) |p| json.unescape(allocator, p) catch p else null;
     var results = std.ArrayList(u8).init(allocator);
