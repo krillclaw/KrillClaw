@@ -15,6 +15,7 @@
 <p align="center">
   <a href="https://yoctoclaw.github.io">Website</a> ·
   <a href="https://yoctoclaw.github.io/#waitlist">Get a Device</a> ·
+  <a href="https://yoctoclaw.github.io/wizard">Setup Wizard</a> ·
   <a href="#quick-start">Quick Start</a> ·
   <a href="#use-cases">Use Cases</a>
 </p>
@@ -66,6 +67,23 @@ export OPENAI_API_KEY=sk-...
 # Local with Ollama
 ./zig-out/bin/krillclaw --provider ollama -m llama3 "explain this code"
 ```
+
+
+## 🧙 Setup Wizard
+
+Skip the manual configuration — KrillClaw includes an **interactive browser-based Setup Wizard** that gets you running in ~2 minutes.
+
+**👉 [Launch the Setup Wizard](https://yoctoclaw.github.io/wizard)**
+
+The wizard walks you through 5 steps:
+
+1. **Device Detection** — auto-detects connected hardware (ESP32, Pi Pico, etc.)
+2. **WiFi Configuration** — set your network credentials
+3. **LLM Provider** — choose from 27 supported providers (OpenAI, Anthropic, Ollama, etc.)
+4. **Profile Selection** — pick your use case: Coding, IoT, or Robotics
+5. **Done** — config is written, device is flashed, you're ready
+
+No manual config file editing needed. No YAML. No TOML. Just point, click, done.
 
 ## Profiles
 
@@ -146,6 +164,34 @@ OpenRouter · SiliconFlow · Hugging Face Inference · DeepInfra
 Ollama · vLLM · LiteLLM · LocalAI · llama.cpp · text-generation-webui · Jan · LM Studio · GPT4All
 
 > Any endpoint that speaks the OpenAI chat completions format works. Set `KRILLCLAW_BASE_URL` and go.
+
+## 🦐 CLI
+
+KrillClaw includes a built-in CLI for configuration and debugging. On boot, you're greeted by the kawaii shrimp mascot:
+
+```
+        \|/
+     .-'°bg°'-.    KrillClaw™ v0.1.0
+    ( (●)  (●) )   ━━━━━━━━━━━━━━━━━
+ ╭──|    ‿     |   Ready. 180KB. Thinking.
+ │╭╮ \        /
+ ╰╰╯  '-.=.-'
+     _/ | | \_
+    (___|_|___)
+       <~~>
+```
+
+### Commands
+
+```bash
+krillclaw status          # Show agent status, uptime, memory usage
+krillclaw config          # View/edit configuration
+krillclaw config --provider anthropic  # Switch LLM provider
+krillclaw version         # Show version and build info
+krillclaw memory inspect  # Inspect agent memory and context window
+```
+
+The CLI supports ANSI color output on 256-color terminals — the shrimp mascot renders in coral/salmon (`#ff875f`) on supported terminals.
 
 ## Architecture
 
