@@ -144,6 +144,8 @@ test {
     _ = @import("config.zig");
     _ = @import("transport.zig");
     _ = @import("arena.zig");
+    _ = @import("memory/filesystem.zig");
+    _ = @import("memory/store.zig");
     if (build_options.enable_ble) {
         _ = @import("ble.zig");
     }
