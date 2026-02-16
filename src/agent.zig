@@ -3,6 +3,7 @@ const types = @import("types.zig");
 const api = @import("api.zig");
 const tool_exec = @import("tools.zig");
 const json = @import("json.zig");
+const react = @import("react.zig");
 const Context = @import("context.zig").Context;
 
 const Color = struct {
@@ -64,7 +65,8 @@ pub const Agent = struct {
         });
 
         var turn: u32 = 0;
-        while (turn < self.config.max_turns) : (turn += 1) {
+        const effective_max = @min(self.config.max_turns, react.MAX_ITERATIONS_HARD_CAP);
+        while (turn < effective_max) : (turn += 1) {
             // Context window management
             try self.context.truncate(&self.messages);
 
@@ -202,8 +204,8 @@ pub const Agent = struct {
             }
         }
 
-        if (turn >= self.config.max_turns) {
-            try self.stdout.print("\n{s}(max turns: {d}){s}\n", .{ Color.yellow, self.config.max_turns, Color.reset });
+        if (turn >= effective_max) {
+            try self.stdout.print("\n{s}(max turns: {d} / cap:{d}){s}\n", .{ Color.yellow, self.config.max_turns, react.MAX_ITERATIONS_HARD_CAP, Color.reset });
         }
 
         // Usage summary
