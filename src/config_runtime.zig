@@ -44,7 +44,24 @@ pub const RuntimeConfig = struct {
     allocator: std.mem.Allocator,
     config_path: []const u8,
     dirty: bool = false,
+    allocated: [7]bool = .{false} ** 7,
     subscribers: [8]?Subscriber = .{null} ** 8,
+
+    /// Tracks which string fields were heap-allocated (vs. compile-time defaults).
+    const AllocField = enum(u3) { model, api_key, base_url, wifi_ssid, wifi_password, serial_port, ble_device };
+
+    fn markAlloc(self: *RuntimeConfig, field: AllocField) void {
+        self.allocated[@intFromEnum(field)] = true;
+    }
+    fn freeIfAlloc(self: *RuntimeConfig, field: AllocField, ptr: []const u8) void {
+        if (self.allocated[@intFromEnum(field)]) {
+            self.allocator.free(@constCast(ptr));
+            self.allocated[@intFromEnum(field)] = false;
+        }
+    }
+    fn freeOptIfAlloc(self: *RuntimeConfig, field: AllocField, ptr: ?[]const u8) void {
+        if (ptr) |p| self.freeIfAlloc(field, p);
+    }
 
     pub fn init(allocator: std.mem.Allocator, config: types.Config) RuntimeConfig {
         return .{
@@ -93,21 +110,30 @@ pub const RuntimeConfig = struct {
     pub fn setModel(self: *RuntimeConfig, model: []const u8) !void {
         if (model.len == 0) return error.InvalidModel;
         if (model.len > 256) return error.InvalidModel;
+        const old_model = self.config.model;
         self.config.model = try self.allocator.dupe(u8, model);
+        self.freeIfAlloc(.model, old_model);
+        self.markAlloc(.model);
         self.dirty = true;
         self.notify(.model);
     }
 
     pub fn setApiKey(self: *RuntimeConfig, key: []const u8) !void {
         if (key.len == 0) return error.InvalidApiKey;
+        const old_key = self.config.api_key;
         self.config.api_key = try self.allocator.dupe(u8, key);
+        self.freeIfAlloc(.api_key, old_key);
+        self.markAlloc(.api_key);
         self.dirty = true;
         self.notify(.api_key);
     }
 
     pub fn setBaseUrl(self: *RuntimeConfig, url: []const u8) !void {
         if (url.len > 0 and !std.mem.startsWith(u8, url, "http")) return error.InvalidUrl;
+        const old_url = self.config.base_url;
         self.config.base_url = if (url.len > 0) try self.allocator.dupe(u8, url) else null;
+        self.freeOptIfAlloc(.base_url, old_url);
+        if (url.len > 0) self.markAlloc(.base_url);
         self.dirty = true;
         self.notify(.base_url);
     }
@@ -134,14 +160,20 @@ pub const RuntimeConfig = struct {
 
     pub fn setWifiSsid(self: *RuntimeConfig, ssid: []const u8) !void {
         if (ssid.len == 0 or ssid.len > 32) return error.InvalidWifiSsid;
+        const old_ssid = self.config.wifi_ssid;
         self.config.wifi_ssid = try self.allocator.dupe(u8, ssid);
+        self.freeOptIfAlloc(.wifi_ssid, old_ssid);
+        self.markAlloc(.wifi_ssid);
         self.dirty = true;
         self.notify(.wifi_ssid);
     }
 
     pub fn setWifiPassword(self: *RuntimeConfig, password: []const u8) !void {
         if (password.len > 63) return error.InvalidWifiPassword;
+        const old_pass = self.config.wifi_password;
         self.config.wifi_password = if (password.len > 0) try self.allocator.dupe(u8, password) else null;
+        self.freeOptIfAlloc(.wifi_password, old_pass);
+        if (password.len > 0) self.markAlloc(.wifi_password);
         self.dirty = true;
         self.notify(.wifi_password);
     }
@@ -166,10 +198,8 @@ pub const RuntimeConfig = struct {
         try w.writeAll(",\n");
         try writeJsonField(w, "model", self.config.model);
 
-        if (self.config.api_key.len > 0) {
-            try w.writeAll(",\n");
-            try writeJsonField(w, "api_key", self.config.api_key);
-        }
+        // SECURITY: API key is intentionally NOT persisted to disk.
+        // Use environment variables (e.g. ANTHROPIC_API_KEY) instead.
         if (self.config.base_url) |url| {
             try w.writeAll(",\n");
             try writeJsonField(w, "base_url", url);
@@ -233,13 +263,19 @@ pub const RuntimeConfig = struct {
             }
         }
         if (json.extractString(content, "model")) |m| {
+            self.freeIfAlloc(.model, self.config.model);
             self.config.model = self.allocator.dupe(u8, m) catch return;
+            self.markAlloc(.model);
         }
         if (json.extractString(content, "api_key")) |k| {
+            self.freeIfAlloc(.api_key, self.config.api_key);
             self.config.api_key = self.allocator.dupe(u8, k) catch return;
+            self.markAlloc(.api_key);
         }
         if (json.extractString(content, "base_url")) |u| {
+            self.freeOptIfAlloc(.base_url, self.config.base_url);
             self.config.base_url = self.allocator.dupe(u8, u) catch return;
+            self.markAlloc(.base_url);
         }
         if (json.extractInt(content, "max_tokens")) |mt| {
             self.config.max_tokens = mt;
@@ -251,10 +287,14 @@ pub const RuntimeConfig = struct {
             self.config.streaming = s;
         }
         if (json.extractString(content, "wifi_ssid")) |ssid| {
+            self.freeOptIfAlloc(.wifi_ssid, self.config.wifi_ssid);
             self.config.wifi_ssid = self.allocator.dupe(u8, ssid) catch return;
+            self.markAlloc(.wifi_ssid);
         }
         if (json.extractString(content, "wifi_password")) |pass| {
+            self.freeOptIfAlloc(.wifi_password, self.config.wifi_password);
             self.config.wifi_password = self.allocator.dupe(u8, pass) catch return;
+            self.markAlloc(.wifi_password);
         }
         if (json.extractString(content, "transport")) |t| {
             if (parseTransport(t)) |tr| {
@@ -262,10 +302,14 @@ pub const RuntimeConfig = struct {
             }
         }
         if (json.extractString(content, "serial_port")) |sp| {
+            self.freeOptIfAlloc(.serial_port, self.config.serial_port);
             self.config.serial_port = self.allocator.dupe(u8, sp) catch return;
+            self.markAlloc(.serial_port);
         }
         if (json.extractString(content, "ble_device")) |bd| {
+            self.freeOptIfAlloc(.ble_device, self.config.ble_device);
             self.config.ble_device = self.allocator.dupe(u8, bd) catch return;
+            self.markAlloc(.ble_device);
         }
         if (json.extractInt(content, "serial_baud")) |baud| {
             self.config.serial_baud = baud;
@@ -428,7 +472,7 @@ test "RuntimeConfig set and get" {
 
     try rc.setModel("gpt-4o");
     try std.testing.expectEqualStrings("gpt-4o", rc.config.model);
-    defer alloc.free(@constCast(rc.config.model));
+    defer rc.freeIfAlloc(.model, rc.config.model);
 
     try rc.setMaxTokens(4096);
     try std.testing.expectEqual(@as(u32, 4096), rc.config.max_tokens);
@@ -495,7 +539,7 @@ test "RuntimeConfig applyJson" {
     try std.testing.expectEqual(types.Provider.openai, rc.config.provider);
     try std.testing.expectEqual(@as(u32, 2048), rc.config.max_tokens);
     try std.testing.expectEqual(false, rc.config.streaming);
-    defer alloc.free(@constCast(rc.config.model));
+    defer rc.freeIfAlloc(.model, rc.config.model);
     try std.testing.expectEqualStrings("gpt-4o", rc.config.model);
 }
 
@@ -519,7 +563,7 @@ test "RuntimeConfig save and load roundtrip" {
     try std.testing.expectEqual(false, rc2.config.streaming);
 
     // Free allocated strings from applyJson
-    alloc.free(@constCast(rc2.config.model));
+    rc2.freeIfAlloc(.model, rc2.config.model);
 
     // Cleanup
     std.fs.cwd().deleteFile("/tmp/yoctoclaw_test_config.json") catch {};

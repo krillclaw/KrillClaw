@@ -180,7 +180,6 @@ test {
     _ = @import("tools.zig");
     _ = @import("context.zig");
     _ = @import("config.zig");
-    _ = @import("config_manager.zig");
     _ = @import("config_runtime.zig");
     _ = @import("transport.zig");
     _ = @import("arena.zig");
