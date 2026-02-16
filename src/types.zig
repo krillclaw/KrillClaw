@@ -147,5 +147,7 @@ pub const Config = struct {
     ble_device: ?[]const u8 = null,
     serial_port: ?[]const u8 = null,
     serial_baud: u32 = 115200,
+    wifi_ssid: ?[]const u8 = null,
+    wifi_password: ?[]const u8 = null,
     base_url: ?[]const u8 = null,
 };

@@ -2,6 +2,7 @@ const std = @import("std");
 const build_options = @import("build_options");
 const types = @import("types.zig");
 const config_mod = @import("config.zig");
+const RuntimeConfig = @import("config_runtime.zig").RuntimeConfig;
 const Agent = @import("agent.zig").Agent;
 
 const VERSION = "0.1.0";
@@ -21,18 +22,21 @@ pub fn main() !void {
     const stdout = std.io.getStdOut().writer();
     const stdin = std.io.getStdIn().reader();
 
-    // Load config: file → env → CLI
+    // Load config: file -> env -> CLI
     var config = try config_mod.load(allocator);
     const one_shot = try config_mod.applyCli(&config, allocator);
 
+    // Wrap in RuntimeConfig for runtime switching and persistence
+    var rt = RuntimeConfig.init(allocator, config);
+
     // Validate API key
-    if (config.api_key.len == 0) {
-        const env_name: []const u8 = switch (config.provider) {
+    if (rt.config.api_key.len == 0) {
+        const env_name: []const u8 = switch (rt.config.provider) {
             .claude => "ANTHROPIC_API_KEY",
             .openai => "OPENAI_API_KEY",
             .ollama => "",
         };
-        if (config.provider == .ollama) {
+        if (rt.config.provider == .ollama) {
             // Ollama doesn't need a key
         } else {
             try stdout.print("{s}Error: {s} not set{s}\n", .{ Color.yellow, env_name, Color.reset });
@@ -43,14 +47,14 @@ pub fn main() !void {
 
     // One-shot mode
     if (one_shot) |prompt| {
-        var agent = Agent.init(allocator, config);
+        var agent = Agent.init(allocator, rt.snapshot());
         defer agent.deinit();
         try agent.run(prompt);
         return;
     }
 
     // Interactive REPL
-    try printBanner(stdout, config);
+    try printBanner(stdout, rt.config);
 
     while (true) {
         try stdout.print("\n{s}>{s} ", .{ Color.cyan, Color.reset });
@@ -72,32 +76,47 @@ pub fn main() !void {
             break;
         }
         if (std.mem.eql(u8, trimmed, "/help")) {
-            config_mod.printHelp();
-            continue;
-        }
-        if (std.mem.startsWith(u8, trimmed, "/model ")) {
-            config.model = trimmed[7..];
-            try stdout.print("{s}Model: {s}{s}\n", .{ Color.dim, config.model, Color.reset });
-            continue;
-        }
-        if (std.mem.eql(u8, trimmed, "/model")) {
-            try stdout.print("{s}Model: {s}{s}\n", .{ Color.dim, config.model, Color.reset });
-            continue;
-        }
-        if (std.mem.startsWith(u8, trimmed, "/provider ")) {
-            const p = trimmed[10..];
-            if (std.mem.eql(u8, p, "claude")) config.provider = .claude;
-            if (std.mem.eql(u8, p, "openai")) config.provider = .openai;
-            if (std.mem.eql(u8, p, "ollama")) config.provider = .ollama;
-            try stdout.print("{s}Provider: {s}{s}\n", .{ Color.dim, p, Color.reset });
+            printConfigHelp(stdout) catch {};
             continue;
         }
 
-        var agent = Agent.init(allocator, config);
+        // Runtime config commands (/config, /config set, /config save, /config load)
+        if (rt.handleCommand(trimmed, stdout) catch false) {
+            continue;
+        }
+
+        // Legacy shortcuts (still work, now backed by RuntimeConfig)
+        if (std.mem.startsWith(u8, trimmed, "/model ")) {
+            rt.setModel(trimmed[7..]) catch |err| {
+                try stdout.print("{s}Error: {}{s}\n", .{ Color.yellow, err, Color.reset });
+                continue;
+            };
+            try stdout.print("{s}Model: {s}{s}\n", .{ Color.dim, rt.config.model, Color.reset });
+            continue;
+        }
+        if (std.mem.eql(u8, trimmed, "/model")) {
+            try stdout.print("{s}Model: {s}{s}\n", .{ Color.dim, rt.config.model, Color.reset });
+            continue;
+        }
+        if (std.mem.startsWith(u8, trimmed, "/provider ")) {
+            rt.setProvider(trimmed[10..]) catch |err| {
+                try stdout.print("{s}Error: {}{s}\n", .{ Color.yellow, err, Color.reset });
+                continue;
+            };
+            try stdout.print("{s}Provider: {s}{s}\n", .{ Color.dim, trimmed[10..], Color.reset });
+            continue;
+        }
+
+        var agent = Agent.init(allocator, rt.snapshot());
         defer agent.deinit();
         agent.run(trimmed) catch |err| {
             try stdout.print("{s}Error: {}{s}\n", .{ Color.yellow, err, Color.reset });
         };
+    }
+
+    // Auto-save on exit if dirty
+    if (rt.dirty) {
+        rt.save() catch {};
     }
 
     try stdout.print("\n{s}bye{s}\n", .{ Color.dim, Color.reset });
@@ -120,7 +139,7 @@ fn printBanner(w: anytype, config: types.Config) !void {
         \\ {s}v{s} — the world's smallest coding agent{s}
         \\
         \\ Provider: {s}  Model: {s}
-        \\ Commands: /help /quit /model <name> /provider <name>
+        \\ Commands: /help /quit /config /model <name> /provider <name>
         \\
     , .{
         Color.cyan,
@@ -133,6 +152,25 @@ fn printBanner(w: anytype, config: types.Config) !void {
     });
 }
 
+fn printConfigHelp(w: anytype) !void {
+    try w.print(
+        \\
+        \\Commands:
+        \\  /help                  Show this help
+        \\  /quit, /exit, /q       Exit
+        \\  /model [NAME]          Show or set model
+        \\  /provider NAME         Set provider (claude, openai, ollama)
+        \\  /config                Show current configuration
+        \\  /config set KEY VALUE  Set a config value at runtime
+        \\  /config save           Save config to .yoctoclaw.json
+        \\  /config load           Reload config from .yoctoclaw.json
+        \\
+        \\Config keys: provider, model, api_key, base_url, max_tokens,
+        \\  max_turns, streaming, wifi_ssid, wifi_password, transport
+        \\
+    , .{});
+}
+
 // Pull in all modules for testing
 test {
     _ = @import("types.zig");
@@ -142,6 +180,7 @@ test {
     _ = @import("tools.zig");
     _ = @import("context.zig");
     _ = @import("config.zig");
+    _ = @import("config_runtime.zig");
     _ = @import("transport.zig");
     _ = @import("arena.zig");
     if (build_options.enable_ble) {
