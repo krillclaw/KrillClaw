@@ -161,17 +161,17 @@ fn executeBash(allocator: std.mem.Allocator, input: []const u8) ToolResult {
 
 /// Shell-quote a string for safe inclusion in sh -c
 fn shellQuote(allocator: std.mem.Allocator, s: []const u8) []const u8 {
-    var out = std.ArrayList(u8).init(allocator);
-    out.append('\'') catch return s;
+    var out: std.ArrayList(u8) = .{};
+    out.append(allocator, '\'') catch return s;
     for (s) |c| {
         if (c == '\'') {
-            out.appendSlice("'\\''") catch return s;
+            out.appendSlice(allocator, "'\\''") catch return s;
         } else {
-            out.append(c) catch return s;
+            out.append(allocator, c) catch return s;
         }
     }
-    out.append('\'') catch return s;
-    return out.toOwnedSlice() catch s;
+    out.append(allocator, '\'') catch return s;
+    return out.toOwnedSlice(allocator) catch s;
 }
 
 fn executeReadFile(allocator: std.mem.Allocator, input: []const u8) ToolResult {
@@ -280,7 +280,7 @@ fn executeSearch(allocator: std.mem.Allocator, input: []const u8) ToolResult {
         return .{ .output = "Search path not allowed", .is_error = true };
     }
     const unescaped_pattern = json.unescape(allocator, pattern) catch pattern;
-    var results = std.ArrayList(u8).init(allocator);
+    var results: std.ArrayList(u8) = .{};
     var match_count: usize = 0;
     const max_matches: usize = 100;
     const stat = std.fs.cwd().statFile(search_path) catch {
@@ -289,7 +289,7 @@ fn executeSearch(allocator: std.mem.Allocator, input: []const u8) ToolResult {
             return .{ .output = msg, .is_error = true };
         };
         if (results.items.len == 0) return .{ .output = "No matches found", .is_error = false };
-        return .{ .output = results.toOwnedSlice() catch "No matches found", .is_error = false };
+        return .{ .output = results.toOwnedSlice(allocator) catch "No matches found", .is_error = false };
     };
     if (stat.kind == .file) {
         searchFile(allocator, search_path, unescaped_pattern, &results, &match_count, max_matches) catch {};
@@ -297,7 +297,7 @@ fn executeSearch(allocator: std.mem.Allocator, input: []const u8) ToolResult {
         searchDir(allocator, search_path, unescaped_pattern, &results, &match_count, max_matches, 0) catch {};
     }
     if (results.items.len == 0) return .{ .output = "No matches found", .is_error = false };
-    return .{ .output = results.toOwnedSlice() catch "No matches found", .is_error = false };
+    return .{ .output = results.toOwnedSlice(allocator) catch "No matches found", .is_error = false };
 }
 
 fn searchDir(allocator: std.mem.Allocator, dir_path: []const u8, pattern: []const u8, results: *std.ArrayList(u8), match_count: *usize, max_matches: usize, depth: usize) !void {
@@ -335,7 +335,7 @@ fn searchFile(allocator: std.mem.Allocator, file_path: []const u8, pattern: []co
             const line = content[line_start..line_end];
             if (std.mem.indexOf(u8, line, pattern)) |_| {
                 const entry_str = std.fmt.allocPrint(allocator, "{s}:{d}:{s}\n", .{ file_path, line_num, line }) catch continue;
-                results.appendSlice(entry_str) catch return;
+                results.appendSlice(allocator, entry_str) catch return;
                 match_count.* += 1;
                 if (match_count.* >= max_matches) return;
             }
@@ -353,7 +353,7 @@ fn executeListFiles(allocator: std.mem.Allocator, input: []const u8) ToolResult 
     }
     const pattern = json.extractString(input, "pattern");
     const unescaped_pattern = if (pattern) |p| json.unescape(allocator, p) catch p else null;
-    var results = std.ArrayList(u8).init(allocator);
+    var results: std.ArrayList(u8) = .{};
     var file_count: usize = 0;
     const max_files: usize = 200;
     listDir(allocator, dir_path, unescaped_pattern, &results, &file_count, max_files, 0) catch |err| {
@@ -361,7 +361,7 @@ fn executeListFiles(allocator: std.mem.Allocator, input: []const u8) ToolResult 
         return .{ .output = msg, .is_error = true };
     };
     if (results.items.len == 0) return .{ .output = "(no files found)", .is_error = false };
-    return .{ .output = results.toOwnedSlice() catch "(no files found)", .is_error = false };
+    return .{ .output = results.toOwnedSlice(allocator) catch "(no files found)", .is_error = false };
 }
 
 fn listDir(allocator: std.mem.Allocator, dir_path: []const u8, pattern: ?[]const u8, results: *std.ArrayList(u8), file_count: *usize, max_files: usize, depth: usize) !void {
@@ -377,8 +377,8 @@ fn listDir(allocator: std.mem.Allocator, dir_path: []const u8, pattern: ?[]const
         switch (entry.kind) {
             .file => {
                 if (pattern) |p| { if (!matchGlob(entry.name, p)) continue; }
-                results.appendSlice(full_path) catch continue;
-                results.append('\n') catch continue;
+                results.appendSlice(allocator, full_path) catch continue;
+                results.append(allocator, '\n') catch continue;
                 file_count.* += 1;
             },
             .directory => listDir(allocator, full_path, pattern, results, file_count, max_files, depth + 1) catch continue,
@@ -418,15 +418,15 @@ fn executeApplyPatch(allocator: std.mem.Allocator, input: []const u8) ToolResult
             return .{ .output = "Cannot write patch", .is_error = true };
         };
     }
-    var escaped_path = std.ArrayList(u8).init(allocator);
+    var escaped_path: std.ArrayList(u8) = .{};
     for (path) |c| {
         if (c == '\'') {
-            escaped_path.appendSlice("'\\''") catch return .{ .output = "escape error", .is_error = true };
+            escaped_path.appendSlice(allocator, "'\\''") catch return .{ .output = "escape error", .is_error = true };
         } else {
-            escaped_path.append(c) catch return .{ .output = "escape error", .is_error = true };
+            escaped_path.append(allocator, c) catch return .{ .output = "escape error", .is_error = true };
         }
     }
-    const safe_path = escaped_path.toOwnedSlice() catch return .{ .output = "escape error", .is_error = true };
+    const safe_path = escaped_path.toOwnedSlice(allocator) catch return .{ .output = "escape error", .is_error = true };
     const cmd = std.fmt.allocPrint(allocator, "patch -p0 '{s}' < '{s}'", .{ safe_path, tmp_patch }) catch {
         return .{ .output = "Failed to build patch command", .is_error = true };
     };

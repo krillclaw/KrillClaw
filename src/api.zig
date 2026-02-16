@@ -70,10 +70,7 @@ pub const Client = struct {
         const url = try std.fmt.allocPrint(self.allocator, "{s}{s}", .{ base, path });
         defer self.allocator.free(url);
 
-        const uri = std.Uri.parse(url) catch return ApiError.HttpError;
-
         // Build headers based on provider
-        var header_buf: [8192]u8 = undefined;
         var auth_buf: [512]u8 = undefined;
 
         const extra_headers: []const std.http.Header = switch (config.provider) {
@@ -94,23 +91,27 @@ pub const Client = struct {
             },
         };
 
-        var req = self.http_client.open(.POST, uri, .{
-            .server_header_buffer = &header_buf,
+        const uri = std.Uri.parse(url) catch return ApiError.HttpError;
+
+        // Use request() for both streaming and non-streaming
+        var req = self.http_client.request(.POST, uri, .{
             .extra_headers = extra_headers,
         }) catch return ApiError.ConnectionRefused;
         defer req.deinit();
 
+        // Send body
         req.transfer_encoding = .{ .content_length = body.len };
-        req.send() catch return ApiError.HttpError;
-        req.writeAll(body) catch return ApiError.HttpError;
-        req.finish() catch return ApiError.HttpError;
-        req.wait() catch return ApiError.HttpError;
+        var send_body = req.sendBodyUnflushed(&.{}) catch return ApiError.HttpError;
+        send_body.writer.writeAll(body) catch return ApiError.HttpError;
+        send_body.end() catch return ApiError.HttpError;
+        req.connection.?.flush() catch return ApiError.HttpError;
 
-        if (req.response.status != .ok) {
-            // Read error body for debugging
-            _ = req.reader().readAllAlloc(self.allocator, 1024 * 64) catch {};
+        // Receive response head
+        var head_buf: [16384]u8 = undefined;
+        var response = req.receiveHead(&head_buf) catch return ApiError.HttpError;
 
-            return switch (req.response.status) {
+        if (response.head.status != .ok) {
+            return switch (response.head.status) {
                 .too_many_requests => ApiError.RateLimited,
                 .unauthorized => ApiError.AuthError,
                 .internal_server_error, .bad_gateway, .service_unavailable => ApiError.ServerError,
@@ -118,16 +119,26 @@ pub const Client = struct {
             };
         }
 
-        // Streaming response
+        // Read response body
+        var transfer_buf: [8192]u8 = undefined;
+        const reader = response.reader(&transfer_buf);
+
         if (config.streaming) {
-            return self.readStreaming(req.reader(), on_text);
+            return self.readStreaming(reader, on_text);
         }
 
-        // Non-streaming response
-        const resp_body = req.reader().readAllAlloc(self.allocator, 1024 * 1024) catch return ApiError.HttpError;
-        defer self.allocator.free(resp_body);
+        // Non-streaming: read all
+        var resp_body_list: std.ArrayList(u8) = .{};
+        defer resp_body_list.deinit(self.allocator);
 
-        return parseResponse(self.allocator, resp_body, config.provider);
+        var read_buf: [4096]u8 = undefined;
+        while (true) {
+            const n = reader.readSliceShort(&read_buf) catch return ApiError.HttpError;
+            if (n == 0) break;
+            resp_body_list.appendSlice(self.allocator, read_buf[0..n]) catch return ApiError.OutOfMemory;
+        }
+
+        return parseResponse(self.allocator, resp_body_list.items, config.provider);
     }
 
     fn readStreaming(self: *Client, reader: anytype, on_text: ?*const fn ([]const u8) void) !types.ApiResponse {
@@ -136,7 +147,7 @@ pub const Client = struct {
 
         var buf: [4096]u8 = undefined;
         while (true) {
-            const n = reader.read(&buf) catch return ApiError.HttpError;
+            const n = reader.readSliceShort(&buf) catch return ApiError.HttpError;
             if (n == 0) break;
 
             const done = try parser.feed(buf[0..n], on_text);
@@ -194,12 +205,12 @@ fn parseOpenAiResponse(allocator: std.mem.Allocator, body: []const u8) !types.Ap
 
     const message = json.extractObject(choices, "message") orelse return ApiError.InvalidResponse;
 
-    var blocks = std.ArrayList(types.ContentBlock).init(allocator);
+    var blocks: std.ArrayList(types.ContentBlock) = .{};
 
     // Extract text content
     if (json.extractString(message, "content")) |text| {
         if (text.len > 0) {
-            try blocks.append(.{
+            try blocks.append(allocator, .{
                 .type = .text,
                 .text = try allocator.dupe(u8, text),
             });
@@ -217,7 +228,7 @@ fn parseOpenAiResponse(allocator: std.mem.Allocator, body: []const u8) !types.Ap
     return .{
         .id = try allocator.dupe(u8, id),
         .stop_reason = stop_reason,
-        .content = try blocks.toOwnedSlice(),
+        .content = try blocks.toOwnedSlice(allocator),
         .input_tokens = json.extractInt(usage, "prompt_tokens") orelse 0,
         .output_tokens = json.extractInt(usage, "completion_tokens") orelse 0,
     };
@@ -256,7 +267,7 @@ fn parseOpenAiToolCalls(allocator: std.mem.Allocator, tool_calls_json: []const u
         const name = json.extractString(func, "name") orelse "";
         const arguments = json.extractString(func, "arguments") orelse "{}";
 
-        try blocks.append(.{
+        try blocks.append(allocator, .{
             .type = .tool_use,
             .tool_use = .{
                 .id = try allocator.dupe(u8, tc_id),
@@ -270,7 +281,7 @@ fn parseOpenAiToolCalls(allocator: std.mem.Allocator, tool_calls_json: []const u
 }
 
 fn parseContentBlocks(allocator: std.mem.Allocator, content_json: []const u8) ![]types.ContentBlock {
-    var blocks = std.ArrayList(types.ContentBlock).init(allocator);
+    var blocks: std.ArrayList(types.ContentBlock) = .{};
 
     var pos: usize = 0;
     while (pos < content_json.len) : (pos += 1) {
@@ -301,12 +312,12 @@ fn parseContentBlocks(allocator: std.mem.Allocator, content_json: []const u8) ![
         };
 
         if (std.mem.eql(u8, block_type, "text")) {
-            try blocks.append(.{
+            try blocks.append(allocator, .{
                 .type = .text,
                 .text = try allocator.dupe(u8, json.extractString(obj, "text") orelse ""),
             });
         } else if (std.mem.eql(u8, block_type, "tool_use")) {
-            try blocks.append(.{
+            try blocks.append(allocator, .{
                 .type = .tool_use,
                 .tool_use = .{
                     .id = try allocator.dupe(u8, json.extractString(obj, "id") orelse ""),
@@ -319,7 +330,7 @@ fn parseContentBlocks(allocator: std.mem.Allocator, content_json: []const u8) ![
         pos = end;
     }
 
-    return blocks.toOwnedSlice();
+    return blocks.toOwnedSlice(allocator);
 }
 
 fn parseStopReason(s: []const u8) types.StopReason {

@@ -112,7 +112,7 @@ fn executeRobotCmd(allocator: std.mem.Allocator, input: []const u8) ToolResult {
     }
 
     // Build bridge JSON safely with proper escaping
-    var buf = std.ArrayList(u8).init(allocator);
+    var buf: std.ArrayList(u8) = .{};
     const w = buf.writer();
     w.writeAll("{\"action\":\"robot_cmd\",\"type\":\"") catch return .{ .output = "JSON build error", .is_error = true };
     json.writeEscaped(w, cmd_type) catch return .{ .output = "JSON build error", .is_error = true };
@@ -120,7 +120,7 @@ fn executeRobotCmd(allocator: std.mem.Allocator, input: []const u8) ToolResult {
     // input is already JSON, so include it directly (but it came from Claude API, trusted source)
     w.writeAll(input) catch return .{ .output = "JSON build error", .is_error = true };
     w.writeAll("}") catch return .{ .output = "JSON build error", .is_error = true };
-    const bridge_json = buf.toOwnedSlice() catch return .{ .output = "JSON build error", .is_error = true };
+    const bridge_json = buf.toOwnedSlice(allocator) catch return .{ .output = "JSON build error", .is_error = true };
 
     return bridgeCmd(allocator, bridge_json);
 }

@@ -1,6 +1,7 @@
 .{
-    .name = "yoctoclaw",
+    .name = .yoctoclaw,
     .version = "0.1.0",
+    .fingerprint = 0x5894fed4cbba0fd0,
     .paths = .{
         "build.zig",
         "build.zig.zon",
