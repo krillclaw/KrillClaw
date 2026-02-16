@@ -27,19 +27,19 @@ pub const Store = struct {
 
     pub fn readConfig(self: *Store, name: []const u8, buf: *fs.FileBuffer) fs.Error!void {
         var pathbuf: [fs.MAX_PATH_LEN]u8 = undefined;
-        const path = buildPath(&pathbuf, "config/", name);
+        const path = try buildPath(&pathbuf, "config/", name);
         try self.filesystem.read(path, buf);
     }
 
     pub fn writeConfig(self: *Store, name: []const u8, data: []const u8) fs.Error!void {
         var pathbuf: [fs.MAX_PATH_LEN]u8 = undefined;
-        const path = buildPath(&pathbuf, "config/", name);
+        const path = try buildPath(&pathbuf, "config/", name);
         try self.filesystem.atomicWrite(path, data);
     }
 
     pub fn deleteConfig(self: *Store, name: []const u8) fs.Error!void {
         var pathbuf: [fs.MAX_PATH_LEN]u8 = undefined;
-        const path = buildPath(&pathbuf, "config/", name);
+        const path = try buildPath(&pathbuf, "config/", name);
         try self.filesystem.delete(path);
     }
 
@@ -51,19 +51,19 @@ pub const Store = struct {
 
     pub fn readMemory(self: *Store, name: []const u8, buf: *fs.FileBuffer) fs.Error!void {
         var pathbuf: [fs.MAX_PATH_LEN]u8 = undefined;
-        const path = buildPath(&pathbuf, "memory/", name);
+        const path = try buildPath(&pathbuf, "memory/", name);
         try self.filesystem.read(path, buf);
     }
 
     pub fn writeMemory(self: *Store, name: []const u8, data: []const u8) fs.Error!void {
         var pathbuf: [fs.MAX_PATH_LEN]u8 = undefined;
-        const path = buildPath(&pathbuf, "memory/", name);
+        const path = try buildPath(&pathbuf, "memory/", name);
         try self.filesystem.atomicWrite(path, data);
     }
 
     pub fn deleteMemory(self: *Store, name: []const u8) fs.Error!void {
         var pathbuf: [fs.MAX_PATH_LEN]u8 = undefined;
-        const path = buildPath(&pathbuf, "memory/", name);
+        const path = try buildPath(&pathbuf, "memory/", name);
         try self.filesystem.delete(path);
     }
 
@@ -75,7 +75,7 @@ pub const Store = struct {
 
     pub fn appendSession(self: *Store, name: []const u8, line: []const u8) fs.Error!void {
         var pathbuf: [fs.MAX_PATH_LEN]u8 = undefined;
-        const path = buildPath(&pathbuf, "sessions/", name);
+        const path = try buildPath(&pathbuf, "sessions/", name);
 
         var buf = fs.FileBuffer{};
         self.filesystem.read(path, &buf) catch |err| {
@@ -100,13 +100,13 @@ pub const Store = struct {
 
     pub fn readSession(self: *Store, name: []const u8, buf: *fs.FileBuffer) fs.Error!void {
         var pathbuf: [fs.MAX_PATH_LEN]u8 = undefined;
-        const path = buildPath(&pathbuf, "sessions/", name);
+        const path = try buildPath(&pathbuf, "sessions/", name);
         try self.filesystem.read(path, buf);
     }
 
     pub fn deleteSession(self: *Store, name: []const u8) fs.Error!void {
         var pathbuf: [fs.MAX_PATH_LEN]u8 = undefined;
-        const path = buildPath(&pathbuf, "sessions/", name);
+        const path = try buildPath(&pathbuf, "sessions/", name);
         try self.filesystem.delete(path);
     }
 
@@ -116,11 +116,11 @@ pub const Store = struct {
 
     // ---- Helpers ----
 
-    fn buildPath(out: *[fs.MAX_PATH_LEN]u8, prefix: []const u8, name: []const u8) []const u8 {
+    fn buildPath(out: *[fs.MAX_PATH_LEN]u8, prefix: []const u8, name: []const u8) fs.Error![]const u8 {
+        if (prefix.len + name.len > fs.MAX_PATH_LEN) return fs.Error.PathTooLong;
         @memcpy(out[0..prefix.len], prefix);
-        const name_len = @min(name.len, fs.MAX_PATH_LEN - prefix.len);
-        @memcpy(out[prefix.len .. prefix.len + name_len], name[0..name_len]);
-        return out[0 .. prefix.len + name_len];
+        @memcpy(out[prefix.len .. prefix.len + name.len], name);
+        return out[0 .. prefix.len + name.len];
     }
 };
 

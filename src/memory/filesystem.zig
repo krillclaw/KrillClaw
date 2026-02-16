@@ -155,8 +155,9 @@ pub const PosixBackend = struct {
         };
     }
 
-    fn fullPath(self: *const Self, rel: []const u8, out: *[MAX_PATH_LEN * 2]u8) []const u8 {
+    fn fullPath(self: *const Self, rel: []const u8, out: *[MAX_PATH_LEN * 2]u8) Error![]const u8 {
         const rlen = self.root_len;
+        if (rlen + 1 + rel.len > MAX_PATH_LEN * 2) return Error.PathTooLong;
         @memcpy(out[0..rlen], self.root[0..rlen]);
         out[rlen] = '/';
         @memcpy(out[rlen + 1 .. rlen + 1 + rel.len], rel);
@@ -166,7 +167,7 @@ pub const PosixBackend = struct {
     fn posixRead(ctx: *anyopaque, path: []const u8, buf: *FileBuffer) Error!void {
         const self: *Self = @ptrCast(@alignCast(ctx));
         var pathbuf: [MAX_PATH_LEN * 2]u8 = undefined;
-        const full = self.fullPath(path, &pathbuf);
+        const full = try self.fullPath(path, &pathbuf);
         const file = std.fs.cwd().openFile(full, .{}) catch return Error.FileNotFound;
         defer file.close();
         const n = file.readAll(&buf.data) catch return Error.ReadError;
@@ -177,7 +178,7 @@ pub const PosixBackend = struct {
         if (data.len > MAX_FILE_SIZE) return Error.FileTooLarge;
         const self: *Self = @ptrCast(@alignCast(ctx));
         var pathbuf: [MAX_PATH_LEN * 2]u8 = undefined;
-        const full = self.fullPath(path, &pathbuf);
+        const full = try self.fullPath(path, &pathbuf);
         const file = std.fs.cwd().createFile(full, .{}) catch return Error.WriteError;
         defer file.close();
         file.writeAll(data) catch return Error.WriteError;
@@ -186,7 +187,7 @@ pub const PosixBackend = struct {
     fn posixDelete(ctx: *anyopaque, path: []const u8) Error!void {
         const self: *Self = @ptrCast(@alignCast(ctx));
         var pathbuf: [MAX_PATH_LEN * 2]u8 = undefined;
-        const full = self.fullPath(path, &pathbuf);
+        const full = try self.fullPath(path, &pathbuf);
         std.fs.cwd().deleteFile(full) catch return Error.DeleteError;
     }
 
@@ -194,8 +195,8 @@ pub const PosixBackend = struct {
         const self: *Self = @ptrCast(@alignCast(ctx));
         var oldbuf: [MAX_PATH_LEN * 2]u8 = undefined;
         var newbuf: [MAX_PATH_LEN * 2]u8 = undefined;
-        const old_full = self.fullPath(old, &oldbuf);
-        const new_full = self.fullPath(new, &newbuf);
+        const old_full = try self.fullPath(old, &oldbuf);
+        const new_full = try self.fullPath(new, &newbuf);
 
         var old_z: [MAX_PATH_LEN * 2 + 1]u8 = undefined;
         var new_z: [MAX_PATH_LEN * 2 + 1]u8 = undefined;
@@ -212,7 +213,7 @@ pub const PosixBackend = struct {
     fn posixList(ctx: *anyopaque, dir: []const u8, out: *DirListing) Error!void {
         const self: *Self = @ptrCast(@alignCast(ctx));
         var pathbuf: [MAX_PATH_LEN * 2]u8 = undefined;
-        const full = self.fullPath(dir, &pathbuf);
+        const full = try self.fullPath(dir, &pathbuf);
 
         var d = std.fs.cwd().openDir(full, .{ .iterate = true }) catch return Error.ListError;
         defer d.close();
@@ -233,7 +234,7 @@ pub const PosixBackend = struct {
     fn posixExists(ctx: *anyopaque, path: []const u8) bool {
         const self: *Self = @ptrCast(@alignCast(ctx));
         var pathbuf: [MAX_PATH_LEN * 2]u8 = undefined;
-        const full = self.fullPath(path, &pathbuf);
+        const full = self.fullPath(path, &pathbuf) catch return false;
         std.fs.cwd().access(full, .{}) catch return false;
         return true;
     }
@@ -241,7 +242,7 @@ pub const PosixBackend = struct {
     fn posixMkdirp(ctx: *anyopaque, path: []const u8) Error!void {
         const self: *Self = @ptrCast(@alignCast(ctx));
         var pathbuf: [MAX_PATH_LEN * 2]u8 = undefined;
-        const full = self.fullPath(path, &pathbuf);
+        const full = try self.fullPath(path, &pathbuf);
         std.fs.cwd().makePath(full) catch return Error.WriteError;
     }
 };
