@@ -99,8 +99,8 @@ fn isCanonicalPathAllowed(canonical_path: []const u8) bool {
         return std.mem.startsWith(u8, canonical_path, "/tmp/yoctoclaw-sandbox");
     }
 
-    // Non-sandbox: allow /tmp or paths under cwd
-    if (std.mem.startsWith(u8, canonical_path, "/tmp")) return true;
+    // Non-sandbox: allow /tmp/yoctoclaw-* (least privilege) or paths under cwd
+    if (std.mem.startsWith(u8, canonical_path, "/tmp/yoctoclaw")) return true;
 
     const cwd_real = std.fs.cwd().realpathAlloc(std.heap.page_allocator, ".") catch return false;
     defer std.heap.page_allocator.free(cwd_real);
@@ -403,7 +403,12 @@ fn executeApplyPatch(allocator: std.mem.Allocator, input: []const u8) ToolResult
         return .{ .output = "Missing 'patch' parameter", .is_error = true };
     };
     const unescaped_patch = json.unescape(allocator, patch) catch patch;
-    const tmp_patch = "/tmp/yoctoclaw_patch.tmp";
+    // Use unique temp file to prevent TOCTOU race condition
+    const timestamp = @as(u64, @intCast(std.time.timestamp()));
+    const tmp_patch = std.fmt.allocPrint(allocator, "/tmp/yoctoclaw_patch_{d}.tmp", .{timestamp}) catch {
+        return .{ .output = "Failed to create temp path", .is_error = true };
+    };
+    defer allocator.free(tmp_patch);
     {
         const f = std.fs.cwd().createFile(tmp_patch, .{}) catch {
             return .{ .output = "Cannot create temp patch file", .is_error = true };

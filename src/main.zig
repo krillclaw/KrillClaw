@@ -59,6 +59,7 @@ pub fn main() !void {
             if (err == error.EndOfStream) break;
             return err;
         };
+        defer allocator.free(line);
 
         const trimmed = std.mem.trim(u8, line, &std.ascii.whitespace);
         if (trimmed.len == 0) continue;

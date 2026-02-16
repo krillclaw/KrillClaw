@@ -82,7 +82,8 @@ pub const Client = struct {
                 .{ .name = "content-type", .value = "application/json" },
             },
             .openai => blk: {
-                const auth = std.fmt.allocPrint(self.allocator, "Bearer {s}", .{config.api_key}) catch return ApiError.OutOfMemory;
+                var auth_buf: [512]u8 = undefined;
+                const auth = std.fmt.bufPrint(&auth_buf, "Bearer {s}", .{config.api_key}) catch return ApiError.OutOfMemory;
                 break :blk &.{
                     .{ .name = "Authorization", .value = auth },
                     .{ .name = "content-type", .value = "application/json" },
@@ -105,11 +106,11 @@ pub const Client = struct {
         req.finish() catch return ApiError.HttpError;
         req.wait() catch return ApiError.HttpError;
 
-        if (req.status != .ok) {
+        if (req.response.status != .ok) {
             // Read error body for debugging
             _ = req.reader().readAllAlloc(self.allocator, 1024 * 64) catch {};
 
-            return switch (req.status) {
+            return switch (req.response.status) {
                 .too_many_requests => ApiError.RateLimited,
                 .unauthorized => ApiError.AuthError,
                 .internal_server_error, .bad_gateway, .service_unavailable => ApiError.ServerError,

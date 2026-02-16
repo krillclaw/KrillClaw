@@ -43,6 +43,7 @@ fn checkCmdRate() bool {
 
 fn extractFloat(input: []const u8, key: []const u8) ?f64 {
     const key_pattern = std.fmt.allocPrint(std.heap.page_allocator, "\"{s}\"", .{key}) catch return null;
+    defer std.heap.page_allocator.free(key_pattern);
     const key_pos = std.mem.indexOf(u8, input, key_pattern) orelse return null;
     var pos = key_pos + key_pattern.len;
     while (pos < input.len and (input[pos] == ' ' or input[pos] == ':')) : (pos += 1) {}

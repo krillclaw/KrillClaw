@@ -93,6 +93,7 @@ pub const Agent = struct {
             // Process content blocks
             var has_tool_use = false;
             var tool_results = std.ArrayList(types.ContentBlock).init(self.allocator);
+            defer tool_results.deinit();
 
             for (response.content) |block| {
                 switch (block.type) {
